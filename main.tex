@@ -1,0 +1,150 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[margin=0.5in,includefoot,nohead]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{parskip}
+
+\title{BoltzFlow: Inference of Atomistic Protein Dynamics from Equilibrium Conformational Distributions using Neural ODEs
+        \vspace{0.5cm} \\
+        \large 18.337 Final Project Proposal}
+\author{Rachit Mukkamala and David Goh}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction and Motivation}
+
+Proteins are inherently dynamical systems which achieve their functions by undergoing a wide range of conformational changes. Enzymes, for instance, commonly undergo significant structural rearrangements over time as they catalyze chemical reactions. Therefore, being able to model a protein's structural conformational changes over time is critical in order to fully understand a protein's functional properties.
+
+The most common approach used to study protein dynamics is Molecular Dynamics~\cite{hollingsworth2018}, a computational simulation approach which models the motion of atoms in a protein over time by integrating equations of motion from classical mechanics. Forces on each atom at each timestep are computed using empirically fitted equations, called force fields, which model bond lengths and angles using a spring approximation and intermolecular interactions using Coulombic and van Der Waals interactons~\cite{huang2013,maier2015}. 
+
+While molecular dynamics offers a widely applicable strategy to model the motions of any protein of interest, its reliance on an empirically fitted force field leads to significant errors in protein simulation accuracy. Instead, it would be ideal to leverage modern Machine Learning methods to directly learn the forces and energies governing a protein being simulated from ground-truth data.
+
+However, we do not currently have access to experimental methods which can ``record" the exact structural motions of proteins over time. Instead, the closest experimental tools we have available for this task are Nuclear Magnetic Resonance (NMR) and Cryo-Electron Microscopy (CryoEM), which can sample hundreds of static snapshots of different protein conformations but do not provide temporal information or relationships between these snapshots~\cite{zhong2021}.
+
+In this project, we propose \textit{BoltzFlow}: a machine learning framework which can learn the distribution of equilibrium protein states from observed static datapoints and can leverage equilibrium statistics to infer protein trajectories using this learned distribution. BoltzFlow bypasses empirical protein force fields and instead learns thermodynamic properties directly from the observed structures, enabling more accurate molecular simulations. By unifying generative modeling, statistical physics, and Hamiltonian mechanics, BoltzFlow offers a novel, mathematically grounded approach to bring static experimental protein structures to life, paving the way towards a deeper understanding of dynamic protein functions.
+
+
+\section{Molecular Dynamics and Thermodynamic Equilibrium}
+
+Molecular Dynamics (MD) is a numerical algorithm which integrates Hamilton's equations of motion over femtosecond timesteps to simulate the motion of atomic systems~\cite{hollingsworth2018}. In order to execute Hamilton's equations on a system with particles $i \in \{1...n\}$ and dimensions $k \in \{x,y,z\}$, one must define the Hamiltonian $H(\vec{q}, \vec{p}, t)$ of a system, which represents a system state's total internal energy as a function of its particle positions $\vec{q}$ and momenta $\vec{p}$ at time $t$.
+
+\begin{align*}
+    \frac{dq_{i,k}}{dt} &= \frac{\partial H}{\partial p_{i,k}} \\
+    \frac{dp_{i,k}}{dt} &= -\frac{\partial H}{\partial q_{i,k}}
+\end{align*}
+\
+
+Because MD is used to model physical molecular systems, the momenta are defined as $p_{i,k} = m_i \frac{dq_{i,k}}{dt}$ and the Hamiltonian is typically factorized into kinetic and potential energy as follows:
+$$H(\vec{q},\vec{p}, t) = KE(\vec{p}) + PE(\vec{q}) = \sum_i \sum_k \frac{p_{i,k}^2}{2m_i} + V(\vec{q})$$
+
+In traditional MD, $V(\vec{q})$ is known as the \textit{force field}, and is computed by modeling bond lengths, angles, and torsions using empirically fitted constants.
+\
+
+When a system has reached equilibrium, the probability of each system state, $q$, is determined by the the system temperature $T$ and the potential energy of that state, $V(\vec{q})$ and can be modeled by the Boltzmann distribution~\cite{noe2019} 
+
+$$P(\vec{q}) = \frac{1}{Z} \exp{\left(\frac{-V(\vec{q})}{k_BT}\right)}$$
+
+where $Z = \int {\exp{\left(\frac{-V(\vec{q})}{k_BT}\right)}}~\mathrm{d}\vec q$ is a normalization constant and $k_B$ is the Boltzmann constant. By rearranging and taking the gradient with respect to the state position vector $\vec{q}$, we observe that 
+
+$$\frac{dp_{i,k}}{dt} = -\frac{\partial H}{\partial q_{i,k}} = -\frac{\partial}{\partial {q_{i,k}}} V(\vec{q}) = k_BT \cdot \frac{\partial}{\partial {q_{i,k}}}\log{P(\vec{q})}$$
+
+Therefore, if we can determine the log-likelihood of an equilibrium state $\vec{q}(t)$, we can in turn calculate the change in momentum of the state and thus integrate a motion trajectory for this system starting from time $t$. Our proposed approach here thus "learns" the potential $V(\vec{q})$ directly from the distribution of observed system states rather than relying on empirically derived non-physical potential equations.
+
+\section{Continuous Normalizing Flows}
+As described above, a key requirement for our approach is to be able to compute the log-likelihood of a sampled equilibrium state $\vec{q}$. Continuous Normalizing Flows (CNFs) are a generative machine learning framework which enables exact computation of  $\log{P(\vec{q})}$~\cite{grathwohl2018,chen2018}.
+\
+
+A CNF uses a neural network $f(z(\tau), \tau, \theta)$ with learnable parameters $\theta$ to model the probability flow $dz(\tau)/d\tau$ between an observed data point $z(\tau =0) = \vec{q} \sim P(\vec{q})$ sampled from the data distribution and a noised point $z(\tau = 1) \sim \mathcal{N}(0, \mathbf{I})$ sampled from a simple standard Gaussian distribution. We use pseudotime ($\tau$) here to emphasize that this "time" is non-physical and is merely a sampling coordinate for the CNF unlike the real time $t$ used during motion trajectory integration. The change in log-density under the CNF model is governed by the instantaneous probability change of variables formula, which is commonly numerically approximated using Hutchinson's Trace Estimator~\cite{chen2018}:
+
+$$\log{P(z(\tau))} - \log P(z(0)) = \Delta\log{P_z}(\tau) =\int_{0}^{\tau}{-\operatorname{Tr}\left(\frac{\partial f}{\partial z(\lambda)}\right)d\lambda}$$ 
+
+Given a datapoint $\vec{q} = z(0)$, we can solve the following ODE system in the forward direction (forward process) to simultaneously transform $\vec{q}$ into the noised point $z(1)$ and also compute the log-likelihood of $\vec{q}$:
+
+$$
+    \begin{bmatrix}
+    z(1)\\
+    \Delta\log{P_z}(1)
+    \end{bmatrix} = 
+    \begin{bmatrix}
+    z(0) = \vec{q}\\
+    \Delta\log{P_z}(0) = 0
+    \end{bmatrix} + 
+    \int_0^1
+    \begin{bmatrix}
+    f(z(\tau), \tau, \theta)\\
+    -\operatorname{Tr}\left(\frac{\partial f}{\partial z(\tau)}\right)
+    \end{bmatrix} d\tau \\
+$$
+
+Because $z(1) \sim \mathcal{N}(0, \mathbf{I})$, there exists an analytical formula for $\log{P(z(1))}$ given $z(1)$ obtained from the ODE solution above. Thus, $\log{P(\vec{q})} = \log{P(z(1))} - \Delta\log{P_z}(1)$. The training loss function of the CNF is to maximize $\log{P(\vec{q})}$, the likelihood of the observed datapoint $\vec{q}$ under the CNF model. Note that solving this ODE system allows us to directly compute and maximize $\log{P(\vec{q})}$, in contrast to other generative models which generally optimize a lower bound on $\log{P(\vec{q})}$ without directly computing it.
+\
+
+Gradients with respect to the loss $\mathcal{L} = \log{P(\vec{q})} =  \log{P(z(1))} - \Delta\log{P_z}(1)$ are computed using the adjoint sensitivity method, which sets up a new system of ODEs based on the adjoint $a(t)$ which is integrated backwards from $\tau=1$ to $\tau=0$ to obtain gradients with respect to the loss~\cite{Pontryagin1961a}:
+\begin{align*}
+    a(\tau) &= 
+    \begin{bmatrix}
+    a_z(\tau) = \partial\mathcal{L}/\partial z\\
+    a_{\Delta}(\tau) = \partial\mathcal{L}/\partial (\Delta\log{P_z})\\
+    \end{bmatrix}\\\\
+    a(1) &= 
+    \begin{bmatrix}
+    \nabla_z \log{P(z(1))}\\
+    -1\\
+    \end{bmatrix} \\\\
+    \frac{da(\tau)}{d\tau} &= -
+    \begin{bmatrix}
+    \frac{\partial f}{\partial z} & 0\\
+    -\nabla_z \operatorname{Tr}\left(\frac{\partial f}{\partial z}\right) & 0\\
+    \end{bmatrix}^T \cdot
+    a(\tau) \\\\
+    \frac{d}{d\tau}\left(\frac{\partial \mathcal{L}}{\partial \theta}\right) &= a(\tau)^T 
+    \begin{bmatrix}
+        \frac{\partial f}{\partial \theta} \\
+    -\nabla_{\theta} \operatorname{Tr}\left(\frac{\partial f}{\partial z}\right)\\
+    \end{bmatrix} 
+\end{align*}
+
+\section{Summary of \textit{BoltzFlow} Algorithm}
+\begin{enumerate}
+    \item Obtain fixed state snapshots $[\vec{q}_1...\vec{q}_n]$from an equilibriated system.
+    \item Train a CNF model via the adjoint method to learn the distribution of equilibrium states $P(\vec{q})$ from the sampled training data.
+    \item Following training, we can proceed to trajectory inference. Begin by sampling an initial trajectory state $\vec{q}(t_0)$ to begin the trajectory. Sample initial atomic velocities according to the Maxwell-Boltzmann distribution to initialize the system's momenta. Next, iterate the following steps to infer a trajectory from the sampled initial state:
+        \begin{enumerate}
+            \item Integrate the CNF forward to compute $\log{P(\vec{q}(t))}$
+            \item Use the adjoint method to backpropagate and obtain the gradient of the likelihood w.r.t. the state positions, $\nabla_q\log{P(\vec{q}(t))}$. This provides the gradient of the potential in the system's Hamiltonian, $\nabla_qV(\vec{q})$
+            \item Use  $\nabla_qV(\vec{q})$ to update the momenta and compute $\partial H/\partial p$ to update the positions under Hamilton's equations of motion.
+        \end{enumerate}
+    \item Repeat this loop to infer an equilibrium temporal trajectory for the system of interest starting from just a static initial state.
+\end{enumerate}
+
+\section {Project Plan}
+\begin{itemize}
+    \item We will set up the BoltzFlow codebase (CNF sampling, Hamilton equation integration) and initially test our approach on a toy 3D spring system to confirm correct implementation of our approach and to prove that it is possible to recover reasonable system trajectories from a single static state.
+    
+    \item After verifying that our approach works successfully on a model spring system, we will generate a molecular dynamics trajectory of Chignolin (GYDPETGTWG)~\cite{honda2004}, a 10-amino acid model protein commonly used as a test system for molecular dynamics and protein folding methods~\cite{satoh2006}. After equilibriating the system, we will sample $\sim$ 5000 snapshots from the generated MD trajectory to serve as training data for our CNF.
+    
+    \item We will compare the statistics of the trajectories generated by our approach relative to the ground truth MD baseline to determine the quality of our generated trajectories.
+    
+    \item Our proposed generative approach uses a CNF to directly compute the log-likelihood $\log{P(\vec{q})}$, and we then compute gradients using the adjoint method to obtain $\nabla_q\log{P(\vec{q})}$ to make Hamiltonian updates. Diffusion Models, an alternative generative framework to learn $P(\vec{q})$, directly learn $\nabla_q\log{P(\vec{q})}$ as a neural network in a training process known as ``score matching"~\cite{song2021,arts2023}. Thus, we plan to benchmark our CNF exact likelihood approach against diffusion score matching. 
+
+    \begin{itemize}
+        \item An advantage of our CNF exact likelihood approach is that we are directly computing the gradient from a scalar likelihood term, meaning that our computed forces are guaranteed to form a conservative vector field. In contrast, there are no physics-based guarantees on the vector field learned by the diffusion model~\cite{arts2023}. Thus, we predict that our CNF approach will lead to more physically plausible inferred trajectories relative to those generated by the diffusion model baseline.
+
+        \item Additionally, because our CNF approach computes exact log-likelihoods, we can easily use it to compute free-energy differences between protein conformations. This offers another benchmarking avenue: we can benchmark CNF performance by comparing chignolin free energy differences computed by our CNF model relative to known experimental values.
+    \end{itemize}
+    
+    
+    
+    \item We will also train a Hamiltonian Neural Network based on the generated MD trajectories as a baseline to compare against our \textit{ab initio} trajectory inference strategy~\cite{greydanus2019}. Hamiltonian Neural Networks directly learn the Hamiltonian of a system from sequential trajectory data, so we would expect this model to have higher performance than our approach, which infers trajectories without explicitly learning any sequential or temporal relationships. However, if our approach can come close to and/or match the performance of the Hamiltonian NN, then we have shown that our trajectory-free inference approach has the ability to generate molecular trajectories at a level that matches models which have access to temporal information. 
+\end{itemize}
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}
+
