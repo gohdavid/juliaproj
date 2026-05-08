@@ -18,8 +18,10 @@ include(joinpath(@__DIR__, "..", "src", "BoltzFlow.jl"))
 using .BoltzFlow
 using Random, Statistics, LinearAlgebra
 using Plots
+using CUDA
 
 Random.seed!(42)
+CUDA.functional() || error("CUDA is not functional; this GPU runtime is required for training.")
 
 # ── §1  System and data ────────────────────────────────────────────────────────
 println("=== Step 1: Generating equilibrium data ===")
@@ -37,11 +39,13 @@ println("  Generated $N_train training snapshots in ℝ$(sys.dim)")
 # ── §2  Build and initialise the CNF ──────────────────────────────────────────
 println("\n=== Step 2: Building CNF model ===")
 
-net    = MLPNet(sys.dim, 64; n_hidden=2)   # architecture: [4, 64, 64, 3]
+net    = MLPNet(sys.dim, 64; n_hidden=2)   # architecture: [3, 64, 64, 3]
 params = init_params(net)
+train_device = CUDA.cu
 
 println("  MLP dims:      $(net.dims)")
 println("  Total params:  $(count_params(net))")
+println("  Training via:  CUDA.cu")
 
 # ── §3  Train ─────────────────────────────────────────────────────────────────
 println("\n=== Step 3: Training CNF ===")
@@ -52,6 +56,8 @@ losses = train_cnf!(params, net, data;
     lr         = 1f-3,
     ode_reltol = 1f-3,
     ode_abstol = 1f-3,
+    monte_carlo = true,  # GPU-friendly FFJORD trace estimator
+    device     = train_device,
     verbose    = true)
 
 p_loss = plot(losses;

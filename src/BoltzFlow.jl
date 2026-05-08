@@ -14,15 +14,15 @@ module BoltzFlow
 
 using LinearAlgebra, Random, Statistics, Printf
 using OrdinaryDiffEq
-using SciMLSensitivity
+using ComponentArrays
+using DiffEqFlux
+using Optimisers
 using Zygote
-using ForwardDiff
 
 export SpringSystem, generate_equilibrium_data, maxwell_boltzmann_sample
 export boltzmann_logp, boltzmann_score
 export MLPNet, count_params, init_params, mlp_forward
 export cnf_loglikelihood, score_function
-export AdamState, init_adam, update_adam!
 export train_cnf!
 export infer_trajectory, leapfrog_step, GenericSystem
 export compare_distributions, report_stats
@@ -74,24 +74,40 @@ function boltzmann_score(q::AbstractVector, sys::SpringSystem)
 end
 
 # ============================================================
-# §2  Neural Network (flat-parameter MLP)
+# §2  Neural Network (DiffEqFlux FFJORD CNF)
 # ============================================================
-# Representing the network parameters as a flat vector makes the
-# model fully compatible with OrdinaryDiffEq / SciMLSensitivity.
-#
-# Architecture:  [z; τ]  →  Linear → tanh → ... → Linear  →  z
-# Input dimension = data_dim + 1  (appended pseudo-time τ)
+# DiffEqFlux.FFJORD wraps a Lux network f(z) as a Continuous Normalizing Flow.
+# It handles the augmented ODE and log-density correction internally.
 
 struct MLPNet
-    dims::Vector{Int}   # e.g. [4, 64, 64, 3] for 3-D spring
+    dims::Vector{Int}   # e.g. [3, 64, 64, 3] for 3-D spring
+    model               # Lux.Chain defining the FFJORD dynamics f(z)
+    input_dims::Tuple{Int}
+    tspan::Tuple{Float32, Float32}
+    solver
+    ad
+    default_reltol::Float32
+    default_abstol::Float32
+    monte_carlo::Bool
 end
 
 """Build an MLP with `n_hidden` hidden layers of size `hidden_dim`."""
-function MLPNet(data_dim::Int, hidden_dim::Int; n_hidden::Int=2)
-    dims = [data_dim + 1;          # input: z concatenated with τ
+function MLPNet(data_dim::Int, hidden_dim::Int; n_hidden::Int=2,
+                tspan=(0f0, 1f0), solver=Tsit5(),
+                reltol::Real=1f-4, abstol::Real=1f-4,
+                ad=DiffEqFlux.AutoZygote(),
+                monte_carlo::Bool=false)
+    dims = [data_dim;
             fill(hidden_dim, n_hidden);
             data_dim]              # output: same dim as z
-    MLPNet(dims)
+    n_layers = length(dims) - 1
+    layers = [
+        DiffEqFlux.Dense(dims[i] => dims[i+1], i < n_layers ? tanh : identity)
+        for i in 1:n_layers
+    ]
+    MLPNet(dims, DiffEqFlux.Chain(layers...), (data_dim,),
+           (Float32(tspan[1]), Float32(tspan[2])), solver, ad,
+           Float32(reltol), Float32(abstol), monte_carlo)
 end
 
 """Total number of scalar parameters in the MLP."""
@@ -103,74 +119,48 @@ function count_params(net::MLPNet)
     s
 end
 
-"""Initialise parameters with small random values."""
+"""Initialise FFJORD/Lux parameters as a ComponentArray."""
 function init_params(net::MLPNet; scale=0.01f0, rng=Random.default_rng())
-    scale .* randn(rng, Float32, count_params(net))
+    ffjord = ffjord_layer(net)
+    ps, _ = DiffEqFlux.Lux.setup(rng, ffjord)
+    params = ComponentArrays.ComponentArray(ps)
+    scale === nothing && return params
+    params .* Float32(scale)
 end
 
 """
 Forward pass through the MLP.
   z      — state vector (Float32, length data_dim)
-  τ      — pseudo-time scalar
-  params — flat parameter vector
+  τ      — accepted for compatibility; DiffEqFlux.FFJORD uses autonomous f(z)
+  params — Lux/ComponentArray parameter tree
   net    — MLPNet struct with layer sizes
 Returns a vector of the same size as z.
 """
-function mlp_forward(z::AbstractVector, τ::Real, params::AbstractVector, net::MLPNet)
-    x      = vcat(z, eltype(z)[τ])
-    offset = 0
-    n_layers = length(net.dims) - 1
-
-    for i in 1:n_layers
-        d_in  = net.dims[i]
-        d_out = net.dims[i+1]
-        n_w   = d_in * d_out
-
-        W = reshape(params[offset+1 : offset+n_w],          d_out, d_in)
-        b =         params[offset+n_w+1 : offset+n_w+d_out]
-        x = W * x + b
-
-        if i < n_layers          # tanh on hidden layers, linear on output
-            x = tanh.(x)
-        end
-        offset += n_w + d_out
-    end
-    return x
+function mlp_forward(z::AbstractVector, τ::Real, params, net::MLPNet)
+    st = DiffEqFlux.Lux.initialstates(Random.default_rng(), net.model)
+    y, _ = net.model(z, params, st)
+    return y
 end
 
 # ============================================================
 # §3  Continuous Normalizing Flow (CNF)
 # ============================================================
-# Augmented ODE state: u = [z (dim d); Δlog P_z (dim 1)]
-#
-# Dynamics:
-#   dz/dτ          =  f(z, τ, θ)
+# DiffEqFlux.FFJORD integrates the augmented CNF ODE:
+#   dz/dτ = f(z, θ)
 #   d(Δlog P_z)/dτ = -Tr(∂f/∂z)
-#
-# Trace estimated with Hutchinson's estimator:
-#   Tr(J) ≈ εᵀ J ε   where  ε ~ Rademacher{±1}^d
-# and  J ε  is the Jacobian-vector product computed via ForwardDiff.
 
-"""
-Core CNF dynamics with `net` as an explicit argument (not an ODE parameter).
-Used internally to build closures that pass only `params` as the ODE `p`.
-"""
-function cnf_dynamics_core(u, params::AbstractVector, τ, net::MLPNet)
-    d = length(u) - 1
-    z = u[1:d]
+function ffjord_layer(net::MLPNet; solver=net.solver,
+                      reltol::Real=net.default_reltol,
+                      abstol::Real=net.default_abstol)
+    DiffEqFlux.FFJORD(net.model, net.tspan, net.input_dims, solver;
+                      ad=net.ad, reltol=Float32(reltol), abstol=Float32(abstol))
+end
 
-    # Neural-network velocity field
-    fz = mlp_forward(z, τ, params, net)
-
-    # Hutchinson trace estimate of div f  (single Rademacher probe)
-    ε   = sign.(randn(eltype(z), d))
-    jvp = ForwardDiff.derivative(
-        ξ -> mlp_forward(z .+ ξ .* ε, τ, params, net),
-        zero(eltype(z))
-    )                              # J ε  via forward-mode AD
-    trace_est = dot(ε, jvp)       # εᵀ J ε ≈ Tr(J)
-
-    vcat(fz, eltype(z)[-trace_est])
+function ffjord_state(ffjord, net::MLPNet; rng=Random.default_rng(),
+                      regularize::Bool=false,
+                      monte_carlo::Bool=net.monte_carlo)
+    st = DiffEqFlux.Lux.initialstates(rng, ffjord)
+    (; st..., regularize, monte_carlo)
 end
 
 """log P(z) for z ~ N(0, I)."""
@@ -180,41 +170,32 @@ function standard_normal_logp(z::AbstractVector)
 end
 
 """
-Compute log P(q) for a single data point q by integrating the augmented CNF ODE
-from τ = 0 → 1.
-
-The ODE parameter is only `params` (an AbstractVector), satisfying SciMLSensitivity's
-requirement. `net` is closed over.
+Compute log P(q) for a single data point q using DiffEqFlux.FFJORD.
 """
-function cnf_loglikelihood(q::AbstractVector, params::AbstractVector, net::MLPNet;
+function cnf_loglikelihood(q::AbstractVector, params, net::MLPNet;
                            solver=Tsit5(), reltol=1f-4, abstol=1f-4,
-                           sensealg=InterpolatingAdjoint(autojacvec=ZygoteVJP()))
-    d  = length(q)
-    u0 = vcat(q, zero(eltype(q))[])   # [z(0)=q; Δlogp(0)=0]
-
-    # Close over net; only params flows as the differentiable ODE parameter
-    dynamics = (u, p, τ) -> cnf_dynamics_core(u, p, τ, net)
-
-    prob = ODEProblem(dynamics, u0, (0f0, 1f0), params)
-    sol  = solve(prob, solver;
-                 reltol=reltol, abstol=abstol,
-                 sensealg=sensealg,
-                 save_everystep=false, save_start=false)
-
-    u1    = sol[:, end]
-    z1    = u1[1:d]
-    Δlogp = u1[d+1]
-
-    # log P(q) = log P(z(1)) − Δlog P_z(1)
-    standard_normal_logp(z1) - Δlogp
+                           monte_carlo::Bool=net.monte_carlo,
+                           regularize::Bool=false,
+                           sensealg=nothing)
+    first(cnf_batch_loglikelihood(reshape(q, :, 1), params, net;
+                                  solver=solver, reltol=reltol, abstol=abstol,
+                                  monte_carlo=monte_carlo,
+                                  regularize=regularize))
 end
 
 """
 Batch version: returns a vector of log-likelihoods, one per column of Q.
 """
-function cnf_batch_loglikelihood(Q::AbstractMatrix, params::AbstractVector,
-                                  net::MLPNet; kwargs...)
-    [cnf_loglikelihood(Q[:, i], params, net; kwargs...) for i in axes(Q, 2)]
+function cnf_batch_loglikelihood(Q::AbstractMatrix, params, net::MLPNet;
+                                  solver=Tsit5(), reltol=1f-4, abstol=1f-4,
+                                  monte_carlo::Bool=net.monte_carlo,
+                                  regularize::Bool=false,
+                                  sensealg=nothing)
+    ffjord = ffjord_layer(net; solver=solver, reltol=reltol, abstol=abstol)
+    st = ffjord_state(ffjord, net; regularize=regularize, monte_carlo=monte_carlo)
+    model = DiffEqFlux.StatefulLuxLayer{true}(ffjord, nothing, st)
+    logpx, _, _ = model(Q, params)
+    vec(logpx)
 end
 
 # ============================================================
@@ -228,48 +209,21 @@ end
 Compute ∇_q log P(q) using the adjoint method (Zygote differentiates through
 the ODE solver).
 """
-function score_function(q::AbstractVector, params::AbstractVector, net::MLPNet;
+function score_function(q::AbstractVector, params, net::MLPNet;
                         reltol=1f-3, abstol=1f-3,
-                        sensealg=InterpolatingAdjoint(autojacvec=ZygoteVJP()))
+                        monte_carlo::Bool=false,
+                        sensealg=nothing)
     grad = Zygote.gradient(
         q_ -> cnf_loglikelihood(q_, params, net;
-                                reltol=reltol, abstol=abstol, sensealg=sensealg),
+                                reltol=reltol, abstol=abstol,
+                                monte_carlo=monte_carlo, sensealg=sensealg),
         q
     )[1]
     return grad
 end
 
 # ============================================================
-# §5  Adam Optimiser (minimal, no external dependency)
-# ============================================================
-
-mutable struct AdamState
-    m  ::Vector{Float32}   # first moment
-    v  ::Vector{Float32}   # second moment
-    t  ::Int               # step counter
-    lr ::Float32
-    β1 ::Float32
-    β2 ::Float32
-    ε  ::Float32
-end
-
-function init_adam(params::AbstractVector, lr::Real=1f-3)
-    n = length(params)
-    AdamState(zeros(Float32, n), zeros(Float32, n), 0,
-              Float32(lr), 0.9f0, 0.999f0, 1f-8)
-end
-
-function update_adam!(params::AbstractVector, grads::AbstractVector, st::AdamState)
-    st.t += 1
-    @. st.m = st.β1 * st.m + (1 - st.β1) * grads
-    @. st.v = st.β2 * st.v + (1 - st.β2) * grads^2
-    m̂ = st.m ./ (1 - st.β1^st.t)
-    v̂ = st.v ./ (1 - st.β2^st.t)
-    @. params -= st.lr * m̂ / (sqrt(v̂) + st.ε)
-end
-
-# ============================================================
-# §6  Training loop
+# §5  Training loop
 # ============================================================
 
 """
@@ -278,42 +232,56 @@ Train the CNF via maximum log-likelihood.
 
 Returns a vector of per-epoch losses.
 """
-function train_cnf!(params::AbstractVector, net::MLPNet, data::AbstractMatrix;
+function train_cnf!(params, net::MLPNet, data::AbstractMatrix;
                     n_epochs::Int=200,
                     batch_size::Int=32,
                     lr::Real=1f-3,
                     ode_reltol::Float32=1f-3,
                     ode_abstol::Float32=1f-3,
+                    monte_carlo::Bool=net.monte_carlo,
+                    device=identity,
                     verbose::Bool=true)
 
     n_data = size(data, 2)
-    opt    = init_adam(params, lr)
+    train_data = device(data)
+    train_params = device(params)
+    opt_state = Optimisers.setup(Optimisers.Adam(Float32(lr)), train_params)
     losses = Float32[]
+
+    if verbose
+        println("  Training data device: $(DiffEqFlux.Lux.get_device(train_data))")
+        println("  Parameter device:     $(DiffEqFlux.Lux.get_device(train_params))")
+    end
 
     for epoch in 1:n_epochs
         idx   = randperm(n_data)[1:min(batch_size, n_data)]
-        batch = data[:, idx]
+        batch = train_data[:, idx]
 
-        loss, (∂params,) = Zygote.withgradient(params) do p
+        loss, (∂params,) = Zygote.withgradient(train_params) do p
             logps = cnf_batch_loglikelihood(batch, p, net;
                         reltol=ode_reltol, abstol=ode_abstol,
-                        sensealg=InterpolatingAdjoint(autojacvec=ZygoteVJP()))
+                        monte_carlo=monte_carlo)
             -mean(logps)
         end
 
-        update_adam!(params, ∂params, opt)
-        push!(losses, loss)
+        opt_state, updated_params = Optimisers.update!(opt_state, train_params, ∂params)
+        updated_params === train_params || (train_params .= updated_params)
+
+        loss_value = loss isa AbstractArray ? only(DiffEqFlux.Lux.cpu_device()(loss)) : loss
+        push!(losses, Float32(loss_value))
 
         if verbose && epoch % 10 == 0
-            println("Epoch $(lpad(epoch,4)) | Loss: $(round(loss; digits=4))")
+            println("Epoch $(lpad(epoch,4)) | Loss: $(round(loss_value; digits=4))")
         end
     end
+
+    train_params === params || (params .= DiffEqFlux.Lux.cpu_device()(train_params))
 
     return losses
 end
 
 # ============================================================
-# §7  Hamiltonian Trajectory Inference
+# §6  Hamiltonian Trajectory Inference
 # ============================================================
 # Hamilton's equations:
 #   dq/dt =  ∂H/∂p  =  p / m
@@ -366,7 +334,7 @@ Accepts any system type with fields kB, T, m (SpringSystem or GenericSystem).
 Returns (trajectory_q, trajectory_p, KE_trace).
 """
 function infer_trajectory(q0::AbstractVector,
-                          params::AbstractVector,
+                          params,
                           net::MLPNet,
                           sys;                         # SpringSystem or GenericSystem
                           n_steps::Int=500,
