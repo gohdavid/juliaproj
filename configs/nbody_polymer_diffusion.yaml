@@ -1,0 +1,38 @@
+experiment:
+  family: nbody_diffusion
+  name: nbody_equivariant_diffusion_polymer_langevin
+  seed: 0
+
+runtime:
+  use_gpu: true
+
+data:
+  kind: polymer_langevin
+  dim: 2
+  n_atoms: 16
+  n_samples: 4000
+  burn_in: 2000
+  total_steps: 12000
+  dt: 0.005
+  physics_params: [1.0, 1.0]
+  center: true
+
+model:
+  hidden_dims: [64, 64, 64]
+
+diffusion:
+  steps: 100
+  beta_start: 1.0e-4
+  beta_end: 2.0e-2
+
+training:
+  epochs: 30
+  batch_size: 64
+  learning_rate: 1.0e-3
+
+sampling:
+  n_samples: 1000
+
+output:
+  dir: runs
+  plots: true

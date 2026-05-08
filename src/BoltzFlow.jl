@@ -14,10 +14,14 @@ module BoltzFlow
 
 using LinearAlgebra, Random, Statistics, Printf
 using OrdinaryDiffEq
+using StochasticDiffEq
 using ComponentArrays
 using DiffEqFlux
 using Optimisers
 using Zygote
+using CUDA
+get!(ENV, "GKSwstype", "100")
+using Plots
 
 export SpringSystem, generate_equilibrium_data, maxwell_boltzmann_sample
 export boltzmann_logp, boltzmann_score
@@ -26,6 +30,17 @@ export cnf_loglikelihood, score_function
 export train_cnf!
 export infer_trajectory, leapfrog_step, GenericSystem
 export compare_distributions, report_stats
+export load_yaml_config, run_experiment, run_nbody_experiment
+export run_nbody_flow_matching_experiment, run_nbody_diffusion_experiment
+export NBodyDataConfig, generate_nbody_dataset, sample_training_batch
+export MLPVectorField, EGNNVectorField, NBodyCNFContext
+export build_vector_field, init_cnf_params, train_cnf_adam, generate_cnf_samples
+export EquivariantFMVectorField, NBodyFlowMatchingContext, FlowMatchingResult
+export build_fm_vector_field, init_fm_params, train_flow_matching_adam
+export generate_flow_matching_samples, center_positions, pairwise_distance_mae
+export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
+export build_diffusion_model, init_diffusion_params, train_diffusion_adam
+export generate_diffusion_samples
 
 # ============================================================
 # §1  Spring System (toy data)
@@ -391,5 +406,12 @@ function report_stats(train_data::AbstractMatrix,
     @printf "Expected KE (equipartition theorem)  : %.4f\n"  equipartition_KE
     println("=======================================================\n")
 end
+
+include("config.jl")
+include("nbody_data.jl")
+include("nbody_cnf.jl")
+include("nbody_flow_matching.jl")
+include("nbody_diffusion.jl")
+include("experiments.jl")
 
 end # module BoltzFlow

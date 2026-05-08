@@ -1,0 +1,36 @@
+experiment:
+  family: nbody_diffusion
+  name: nbody_equivariant_diffusion_static
+  seed: 0
+
+runtime:
+  use_gpu: true
+
+data:
+  kind: static_asymmetric
+  dim: 2
+  n_atoms: 10
+  n_samples: 4000
+  burn_in: 0
+  noise_std: 0.1
+  center: true
+
+model:
+  hidden_dims: [64, 64, 64]
+
+diffusion:
+  steps: 100
+  beta_start: 1.0e-4
+  beta_end: 2.0e-2
+
+training:
+  epochs: 30
+  batch_size: 64
+  learning_rate: 1.0e-3
+
+sampling:
+  n_samples: 1000
+
+output:
+  dir: runs
+  plots: true

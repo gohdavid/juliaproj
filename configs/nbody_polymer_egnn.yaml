@@ -1,0 +1,40 @@
+experiment:
+  family: nbody_cnf
+  name: nbody_egnn_polymer_langevin
+  seed: 0
+
+runtime:
+  use_gpu: true
+
+data:
+  kind: polymer_langevin
+  dim: 2
+  n_atoms: 16
+  n_samples: 4000
+  burn_in: 2000
+  total_steps: 12000
+  dt: 0.005
+  physics_params: [1.0, 1.0]
+
+model:
+  kind: egnn
+  hidden_dims: [64, 64, 64]
+  trace: exact
+
+ode:
+  t0: 0.0
+  t1: 1.0
+  abstol: 1.0e-5
+  reltol: 1.0e-5
+
+training:
+  epochs: 30
+  batch_size: 64
+  learning_rate: 1.0e-3
+
+sampling:
+  n_samples: 1000
+
+output:
+  dir: runs
+  plots: true
