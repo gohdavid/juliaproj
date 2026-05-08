@@ -1,0 +1,16 @@
+experiment:
+  config: configs/experiments/rouse_video.yaml
+
+analysis:
+  video: true
+  potential: false
+  score: false
+
+video:
+  framerate: 24
+
+output:
+  dir: outputs/rouse_raw
+  frame_dir: outputs/rouse_raw/frames
+  gif_path: outputs/rouse_raw/rouse_raw_first_5tau.gif
+  mp4_path: outputs/rouse_raw/rouse_raw_first_5tau.mp4

@@ -1,0 +1,16 @@
+experiment:
+  config: configs/experiments/rouse_analysis.yaml
+
+analysis:
+  video: false
+  potential: false
+  score: true
+
+score:
+  analytic_samples: 2000000
+  bins: 60
+  analytic_bins: 240
+
+output:
+  dir: outputs/rouse_raw
+  score_path: outputs/rouse_raw/rouse_raw_score_norm2_histogram.png

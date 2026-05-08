@@ -1,0 +1,11 @@
+experiment:
+  config: configs/experiments/rouse_analysis.yaml
+
+analysis:
+  video: false
+  potential: true
+  score: false
+
+output:
+  dir: outputs/rouse_raw
+  histogram_path: outputs/rouse_raw/rouse_raw_potential_histogram.png

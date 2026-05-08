@@ -1,0 +1,19 @@
+seed: 11
+
+rouse:
+  dim: 2
+  n_beads: 32
+  diffusion: 1.0
+  bond_length: 1.0
+  k_over_xi: 3.0
+
+solver:
+  dt: 0.01
+
+save:
+  burn_in_tau: 0.0
+  until_tau: 5.0
+  interval_tau: 0.05
+
+output:
+  path: outputs/rouse_raw/rouse_video.jls

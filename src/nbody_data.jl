@@ -188,7 +188,8 @@ function polymer_langevin_sde_problem(rng::AbstractRNG, cfg::NBodyDataConfig)
 end
 
 function run_polymer_langevin_sde_simulation(rng::AbstractRNG, cfg::NBodyDataConfig;
-                                             save_stride::Int=1)
+                                             save_stride::Int=1,
+                                             center::Bool=true)
     prob = polymer_langevin_sde_problem(rng, cfg)
     saveat = range(0.0f0, cfg.total_steps * cfg.dt;
                    length=(cfg.total_steps ÷ save_stride) + 1)
@@ -196,7 +197,8 @@ function run_polymer_langevin_sde_simulation(rng::AbstractRNG, cfg::NBodyDataCon
 
     trajectory = zeros(Float32, cfg.dim, cfg.n_atoms, length(sol.u))
     for i in eachindex(sol.u)
-        trajectory[:, :, i] = center_frame(reshape(sol.u[i], cfg.dim, cfg.n_atoms))
+        frame = reshape(sol.u[i], cfg.dim, cfg.n_atoms)
+        trajectory[:, :, i] = center ? center_frame(frame) : frame
     end
     return trajectory
 end
@@ -233,7 +235,7 @@ function generate_nbody_dataset(rng::AbstractRNG, cfg::NBodyDataConfig)
     if cfg.kind == :static_asymmetric
         return generate_static_asymmetric_dataset(rng, cfg)
     elseif cfg.kind == :polymer_langevin
-        trajectory = run_polymer_langevin_sde_simulation(rng, cfg)
+        trajectory = run_polymer_langevin_sde_simulation(rng, cfg; center=true)
         return sample_training_batch(rng, trajectory; batch_size=cfg.n_samples,
                                      burn_in=cfg.burn_in)
     end
