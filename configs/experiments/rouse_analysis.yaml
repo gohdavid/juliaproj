@@ -6,6 +6,10 @@ parallel:
   julia_num_threads: 1
   log_dir: logs
 
+logging:
+  progress: true
+  progress_steps: 1000000
+
 rouse:
   dim: 2
   n_beads: 32

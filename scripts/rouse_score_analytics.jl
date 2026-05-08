@@ -66,6 +66,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 using CairoMakie
 using Distributions
+using HDF5
 using Serialization
 using Statistics
 using Printf
@@ -89,6 +90,21 @@ function output_child_path(cfg, out_dir::AbstractString, path_key::AbstractStrin
     legacy_path !== nothing && return joinpath(out_dir, basename(String(legacy_path)))
 
     return joinpath(out_dir, default_file)
+end
+
+function seed_filename(filename::AbstractString, seed::Int)
+    root, ext = splitext(filename)
+    return string(root, "_seed", seed, ext)
+end
+
+function frame_hdf5_path(output_path::AbstractString)
+    root, ext = splitext(output_path)
+    return isempty(ext) ? string(output_path, ".h5") : string(root, ".h5")
+end
+
+function rouse_relaxation_time(n::Int, k_over_xi::Real)
+    lambda1 = 2.0 * (1.0 - cos(pi / Float64(n)))
+    return 1.0 / (Float64(k_over_xi) * lambda1)
 end
 
 function nonideal_param_vector(sim_cfg)
@@ -322,11 +338,11 @@ function plot_score_norm2_histogram(score_norm2, xs, analytic_density,
     return out_path
 end
 
-function experiment_output_path_and_dir(plot_cfg)
+function experiment_output_paths_and_dir(plot_cfg)
     explicit = cfgget(plot_cfg, "data.path", nothing)
     if explicit !== nothing
         data_path = project_path(String(explicit))
-        return data_path, dirname(data_path)
+        return [data_path], dirname(data_path)
     end
 
     exp_cfg_path = cfgget(plot_cfg, "experiment.config", nothing)
@@ -338,10 +354,139 @@ function experiment_output_path_and_dir(plot_cfg)
         default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
         output_file = String(cfgget(exp_cfg, "output.file", default_file))
         data_dir = project_path(config_output_dir(exp_cfg; default_name="rouse_raw"))
-        return joinpath(data_dir, output_file), data_dir
+        n_workers = cfgint(exp_cfg, "parallel.workers", 1)
+        if n_workers > 1
+            seed0 = cfgint(exp_cfg, "seed", 11)
+            stride = cfgint(exp_cfg, "parallel.seed_stride", 1)
+            paths = [joinpath(data_dir, seed_filename(output_file, seed0 + (worker_id - 1) * stride))
+                     for worker_id in 1:n_workers]
+            return paths, data_dir
+        end
+        return [joinpath(data_dir, output_file)], data_dir
     end
     data_path = project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/rouse.jls")))
-    return data_path, dirname(data_path)
+    return [data_path], dirname(data_path)
+end
+
+function sim_config_from_experiment_config(exp_cfg)
+    dim = cfgint(exp_cfg, "rouse.dim", 2)
+    n_beads = cfgint(exp_cfg, "rouse.n_beads", 32)
+    diffusion = cfgfloat32(exp_cfg, "rouse.diffusion", 1.0f0)
+    bond_length = cfgfloat32(exp_cfg, "rouse.bond_length", 1.0f0)
+    k_over_xi = cfgfloat32(exp_cfg, "rouse.k_over_xi",
+                           3.0f0 * diffusion / bond_length^2)
+    return Dict(
+        "seed" => cfgint(exp_cfg, "seed", 11),
+        "dim" => dim,
+        "n_beads" => n_beads,
+        "diffusion" => diffusion,
+        "bond_length" => bond_length,
+        "k_over_xi" => k_over_xi,
+        "solver_algorithm" => String(cfgget(exp_cfg, "solver.algorithm", "EM")),
+        "dt" => cfgfloat32(exp_cfg, "solver.dt", 0.01f0),
+        "tau_r" => rouse_relaxation_time(n_beads, k_over_xi),
+        "burn_in_tau" => cfgfloat32(exp_cfg, "save.burn_in_tau", 0.0f0),
+        "until_tau" => cfgfloat32(exp_cfg, "save.until_tau", 5.0f0),
+        "interval_tau" => cfgfloat32(exp_cfg, "save.interval_tau", 0.05f0),
+        "nonideal" => Dict(
+            "lennard_jones" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.lennard_jones.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.lennard_jones.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.lennard_jones.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.lennard_jones.softening", 0.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.lennard_jones.cutoff", 0.0f0),
+                "exclude_bonded" => cfgbool(exp_cfg, "nonideal.lennard_jones.exclude_bonded", true),
+                "shift" => cfgbool(exp_cfg, "nonideal.lennard_jones.shift", true),
+            ),
+            "excluded_volume" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.excluded_volume.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.excluded_volume.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.excluded_volume.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.excluded_volume.softening", 0.0f0),
+                "power" => cfgfloat32(exp_cfg, "nonideal.excluded_volume.power", 12.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.excluded_volume.cutoff", 0.0f0),
+                "exclude_bonded" => cfgbool(exp_cfg, "nonideal.excluded_volume.exclude_bonded", true),
+            ),
+            "confinement" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.confinement.enabled", false),
+                "strength" => cfgfloat32(exp_cfg, "nonideal.confinement.strength", 0.0f0),
+                "centered" => cfgbool(exp_cfg, "nonideal.confinement.centered", true),
+            ),
+        ),
+    )
+end
+
+function hdf5_payload_path(jls_path::AbstractString)
+    root, ext = splitext(jls_path)
+    return ext == ".jls" ? string(root, ".h5") : frame_hdf5_path(jls_path)
+end
+
+function load_hdf5_payload(hdf5_path::AbstractString, sim_cfg)
+    h5open(hdf5_path, "r") do h5
+        written = haskey(h5, "written") ? Int(read(h5["written"])[1]) : size(h5["traj"], 3)
+        written > 0 || error("No frames have been written in $hdf5_path")
+        traj = h5["traj"][:, :, 1:written]
+        times = h5["times"][1:written]
+        times_tau = haskey(h5, "times_tau") ? h5["times_tau"][1:written] : times ./ sim_cfg["tau_r"]
+        return Dict(
+            "config_path" => hdf5_path,
+            "config" => sim_cfg,
+            "times" => times,
+            "times_tau" => times_tau,
+            "traj" => traj,
+        )
+    end
+end
+
+function load_payload(path::AbstractString, sim_cfg; prefer_hdf5::Bool=false)
+    h5_path = hdf5_payload_path(path)
+    if prefer_hdf5 && isfile(h5_path)
+        return load_hdf5_payload(h5_path, sim_cfg)
+    elseif isfile(path)
+        return deserialize(path)
+    elseif isfile(h5_path)
+        return load_hdf5_payload(h5_path, sim_cfg)
+    end
+    error("Missing trajectory output: $path")
+end
+
+function combine_payloads(paths, sim_cfg; allow_partial::Bool=false, prefer_hdf5::Bool=false)
+    payloads = Dict{String,Any}[]
+    loaded_paths = String[]
+    for path in paths
+        try
+            push!(payloads, load_payload(path, sim_cfg; prefer_hdf5))
+            push!(loaded_paths, path)
+        catch err
+            if allow_partial
+                @warn "Skipping unavailable trajectory output" path exception=(err, catch_backtrace())
+            else
+                rethrow()
+            end
+        end
+    end
+    isempty(payloads) && error("No trajectory outputs were available for analysis")
+    ref_cfg = payloads[1]["config"]
+    for payload in payloads[2:end]
+        cfg = payload["config"]
+        cfg["dim"] == ref_cfg["dim"] || error("Cannot combine runs with different dim")
+        cfg["n_beads"] == ref_cfg["n_beads"] || error("Cannot combine runs with different n_beads")
+        cfg["diffusion"] == ref_cfg["diffusion"] || error("Cannot combine runs with different diffusion")
+        cfg["k_over_xi"] == ref_cfg["k_over_xi"] || error("Cannot combine runs with different k_over_xi")
+    end
+    traj = cat((payload["traj"] for payload in payloads)...; dims=3)
+    times = vcat((payload["times"] for payload in payloads)...)
+    times_tau = vcat((payload["times_tau"] for payload in payloads)...)
+    cfg = copy(ref_cfg)
+    cfg["combined_runs"] = length(payloads)
+    cfg["combined_frames"] = size(traj, 3)
+    return Dict(
+        "config_path" => loaded_paths,
+        "config" => cfg,
+        "times" => times,
+        "times_tau" => times_tau,
+        "traj" => traj,
+    )
 end
 
 function plot_output_dir(plot_cfg, data_dir::AbstractString)
@@ -461,18 +606,25 @@ function main()
     plot_cfg_path = project_path(ARGS[1])
     plot_cfg = load_yaml_config(plot_cfg_path)
 
-    data_path, data_dir = experiment_output_path_and_dir(plot_cfg)
+    data_paths, data_dir = experiment_output_paths_and_dir(plot_cfg)
     out_dir = plot_output_dir(plot_cfg, data_dir)
     mkpath(out_dir)
 
-    payload = deserialize(data_path)
+    exp_cfg_path = cfgget(plot_cfg, "experiment.config", nothing)
+    exp_cfg = exp_cfg_path === nothing ? Dict{String,Any}() :
+              load_yaml_config(project_path(String(exp_cfg_path)))
+    sim_cfg = isempty(exp_cfg) ? Dict{String,Any}() : sim_config_from_experiment_config(exp_cfg)
+    allow_partial = cfgbool(plot_cfg, "data.allow_partial", false)
+    prefer_hdf5 = cfgbool(plot_cfg, "data.prefer_hdf5", false)
+    payload = combine_payloads(data_paths, sim_cfg; allow_partial, prefer_hdf5)
     do_video = cfgbool(plot_cfg, "analysis.video", false)
     do_potential = cfgbool(plot_cfg, "analysis.potential", false)
     do_score = cfgbool(plot_cfg, "analysis.score", false)
     do_video || do_potential || do_score ||
         error("Plot config must set analysis.video, analysis.potential, or analysis.score to true")
 
-    println("Loaded raw trajectory: $data_path")
+    println("Loaded raw trajectory files: $(length(data_paths))")
+    @printf "combined analysis frames: %d\n" size(payload["traj"], 3)
     do_video && make_video_outputs(payload, out_dir, plot_cfg)
     do_potential && make_potential_output(payload, out_dir, plot_cfg)
     do_score && make_score_output(payload, out_dir, plot_cfg)

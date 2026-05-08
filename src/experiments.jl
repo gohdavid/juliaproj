@@ -33,6 +33,11 @@ function _data_config(cfg)
         dt=cfgfloat32(cfg, "data.dt", 0.05),
         min_spawn_dist=cfgfloat32(cfg, "data.min_spawn_dist", 1.7),
         physics_params=params,
+        source_path=String(cfgget(cfg, "data.source_path", cfgget(cfg, "data.path", ""))),
+        source_paths=String.(cfgget(cfg, "data.source_paths", cfgget(cfg, "data.paths", String[]))),
+        source_dir=String(cfgget(cfg, "data.source_dir", cfgget(cfg, "data.dir", ""))),
+        source_pattern=String(cfgget(cfg, "data.source_pattern", cfgget(cfg, "data.pattern", "*.h5"))),
+        allow_partial=cfgbool(cfg, "data.allow_partial", false),
     )
 end
 
@@ -65,8 +70,8 @@ function _sample_metrics(train_data, samples)
 end
 
 function _polymer_langevin_score_targets(train_data, data_cfg::NBodyDataConfig)
-    data_cfg.kind == :polymer_langevin ||
-        error("force_matching diffusion currently requires data.kind = polymer_langevin")
+    data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ||
+        error("force_matching diffusion currently requires polymer_langevin or rouse_hdf5 data")
     p = data_cfg.physics_params
     diffusion = length(p) >= 1 ? p[1] : 1.0f0
     bond_length = length(p) >= 2 ? p[2] : 1.0f0
@@ -175,6 +180,9 @@ function run_nbody_experiment(cfg::Dict{String,Any})
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
+    if cfgbool(cfg, "data.center", false)
+        train_data = center_positions(train_data)
+    end
 
     field = build_vector_field(
         cfgsymbol(cfg, "model.kind", "mlp");

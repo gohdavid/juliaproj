@@ -11,11 +11,16 @@ struct NBodyDataConfig
     n_atoms::Int
     n_samples::Int
     burn_in::Int
-    noise_std::Float32
+    noise_std::Float64
     total_steps::Int
-    dt::Float32
-    min_spawn_dist::Float32
-    physics_params::Vector{Float32}
+    dt::Float64
+    min_spawn_dist::Float64
+    physics_params::Vector{Float64}
+    source_path::String
+    source_paths::Vector{String}
+    source_dir::String
+    source_pattern::String
+    allow_partial::Bool
 end
 
 function NBodyDataConfig(;
@@ -29,10 +34,17 @@ function NBodyDataConfig(;
     dt::Real=0.05f0,
     min_spawn_dist::Real=1.7f0,
     physics_params=Float32[],
+    source_path::AbstractString="",
+    source_paths=String[],
+    source_dir::AbstractString="",
+    source_pattern::AbstractString="*.h5",
+    allow_partial::Bool=false,
 )
-    NBodyDataConfig(kind, dim, n_atoms, n_samples, burn_in, Float32(noise_std),
-                    total_steps, Float32(dt), Float32(min_spawn_dist),
-                    Float32.(physics_params))
+    NBodyDataConfig(kind, dim, n_atoms, n_samples, burn_in, Float64(noise_std),
+                    total_steps, Float64(dt), Float64(min_spawn_dist),
+                    Float64.(physics_params), String(source_path),
+                    String.(source_paths), String(source_dir),
+                    String(source_pattern), allow_partial)
 end
 
 function nri_spring_physics!(dx, x, p, t)
@@ -111,15 +123,78 @@ function generate_static_asymmetric_dataset(rng::AbstractRNG, cfg::NBodyDataConf
     return base .+ noise
 end
 
+function _data_path(path::AbstractString)
+    isempty(path) && return ""
+    return isabspath(path) ? String(path) : abspath(String(path))
+end
+
+function _simple_pattern_match(name::AbstractString, pattern::AbstractString)
+    if pattern == "*"
+        return true
+    elseif !occursin("*", pattern)
+        return name == pattern
+    end
+    parts = split(pattern, "*")
+    length(parts) == 2 || error("Only one '*' wildcard is supported in data.source_pattern")
+    prefix, suffix = parts
+    return startswith(name, prefix) && endswith(name, suffix)
+end
+
+function _rouse_hdf5_paths(cfg::NBodyDataConfig)
+    paths = String[]
+    if !isempty(cfg.source_path)
+        push!(paths, _data_path(cfg.source_path))
+    end
+    append!(paths, _data_path.(cfg.source_paths))
+    if !isempty(cfg.source_dir)
+        dir = _data_path(cfg.source_dir)
+        isdir(dir) || error("data.source_dir does not exist: $dir")
+        for name in sort(readdir(dir))
+            _simple_pattern_match(name, cfg.source_pattern) &&
+                push!(paths, joinpath(dir, name))
+        end
+    end
+    unique!(paths)
+    isempty(paths) && error("rouse_hdf5 data needs data.source_path, data.source_paths, or data.source_dir")
+    return paths
+end
+
+function load_rouse_hdf5_dataset(cfg::NBodyDataConfig)
+    paths = _rouse_hdf5_paths(cfg)
+    trajectories = Array{Float32,3}[]
+    for path in paths
+        try
+            h5open(path, "r") do h5
+                haskey(h5, "traj") || error("Missing HDF5 dataset 'traj' in $path")
+                written = haskey(h5, "written") ? Int(read(h5["written"])[1]) :
+                          size(h5["traj"], 3)
+                written > cfg.burn_in || error("burn_in ($(cfg.burn_in)) must be less than written frames ($written) in $path")
+                dim, n_atoms, _ = size(h5["traj"])
+                dim == cfg.dim || error("Expected dim=$(cfg.dim), got $dim in $path")
+                n_atoms == cfg.n_atoms || error("Expected n_atoms=$(cfg.n_atoms), got $n_atoms in $path")
+                push!(trajectories, Float32.(h5["traj"][:, :, (cfg.burn_in + 1):written]))
+            end
+        catch err
+            if cfg.allow_partial
+                @warn "Skipping unavailable Rouse HDF5 file" path exception=(err, catch_backtrace())
+            else
+                rethrow()
+            end
+        end
+    end
+    isempty(trajectories) && error("No Rouse HDF5 frames were loaded")
+    return cat(trajectories...; dims=3)
+end
+
 function center_frame(x)
     return x .- mean(x; dims=2)
 end
 
 function init_polymer_chain(rng::AbstractRNG, dim::Int, n_atoms::Int, bond_std::Real)
-    x = zeros(Float32, dim, n_atoms)
-    scale = Float32(bond_std) / sqrt(Float32(dim))
+    x = zeros(Float64, dim, n_atoms)
+    scale = Float64(bond_std) / sqrt(Float64(dim))
     for i in 2:n_atoms
-        x[:, i] = x[:, i - 1] .+ scale .* randn(rng, Float32, dim)
+        x[:, i] = x[:, i - 1] .+ scale .* randn(rng, Float64, dim)
     end
     return center_frame(x)
 end
@@ -148,7 +223,7 @@ function _polymer_nonideal_params(p)
     )
 end
 
-polymer_nonideal_params(p) = _polymer_nonideal_params(Float32.(p))
+polymer_nonideal_params(p) = _polymer_nonideal_params(Float64.(p))
 
 function _within_cutoff(r2, cutoff)
     cutoff <= 0 && return true
@@ -164,8 +239,8 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
     dim = size(x, 1)
     n_atoms = size(x, 2)
     fill!(score, zero(eltype(score)))
-    inv_d = 1.0f0 / Float32(diffusion)
-    k_score = Float32(k_over_xi) * inv_d
+    inv_d = 1.0 / Float64(diffusion)
+    k_score = Float64(k_over_xi) * inv_d
 
     @inbounds for i in 2:n_atoms
         for d in 1:dim
@@ -178,10 +253,10 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
     min_r2 = 1.0f-12
     @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
         dx1 = x[1, i] - x[1, j]
-        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0f0
+        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0
         raw_r2 = dx1 * dx1 + dx2 * dx2
 
-        coeff = 0.0f0
+        coeff = 0.0
         if nonideal.lj_enabled &&
            !_skip_bonded(i, j, nonideal.lj_exclude_bonded) &&
            _within_cutoff(raw_r2, nonideal.lj_cutoff)
@@ -190,8 +265,8 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
             sig2_over_r2 = (nonideal.lj_sigma * nonideal.lj_sigma) * inv_r2
             sr6 = sig2_over_r2^3
             sr12 = sr6 * sr6
-            coeff += 24.0f0 * nonideal.lj_epsilon * inv_r2 *
-                     (2.0f0 * sr12 - sr6)
+            coeff += 24.0 * nonideal.lj_epsilon * inv_r2 *
+                     (2.0 * sr12 - sr6)
         end
 
         if nonideal.ev_enabled &&
@@ -200,11 +275,11 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
             r2 = max(raw_r2 + nonideal.ev_softening^2, min_r2)
             power = nonideal.ev_power
             sigma_power = nonideal.ev_sigma^power
-            r_power_plus2 = r2^((power + 2.0f0) / 2.0f0)
+            r_power_plus2 = r2^((power + 2.0) / 2.0)
             coeff += nonideal.ev_epsilon * power * sigma_power / r_power_plus2
         end
 
-        if coeff != 0.0f0
+        if coeff != 0.0
             for d in 1:dim
                 dx = x[d, i] - x[d, j]
                 s = coeff * dx
@@ -215,7 +290,7 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
     end
 
     if nonideal.conf_enabled
-        strength = Float32(nonideal.conf_strength)
+        strength = Float64(nonideal.conf_strength)
         if nonideal.conf_centered
             for d in 1:dim
                 cm = zero(eltype(x))
@@ -224,12 +299,12 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
                 end
                 cm /= n_atoms
                 for i in 1:n_atoms
-                    score[d, i] -= 2.0f0 * strength * (x[d, i] - cm)
+                    score[d, i] -= 2.0 * strength * (x[d, i] - cm)
                 end
             end
         else
             for i in 1:n_atoms, d in 1:dim
-                score[d, i] -= 2.0f0 * strength * x[d, i]
+                score[d, i] -= 2.0 * strength * x[d, i]
             end
         end
     end
@@ -238,20 +313,20 @@ end
 
 function polymer_langevin_force!(force, x, diffusion::Real, k_over_xi::Real, nonideal)
     polymer_langevin_score!(force, x, diffusion, k_over_xi, nonideal)
-    force .*= Float32(diffusion)
+    force .*= Float64(diffusion)
     return nothing
 end
 
 function polymer_langevin_force!(force, x, k_over_xi::Real)
-    nonideal = _polymer_nonideal_params(Float32[])
-    return polymer_langevin_force!(force, x, 1.0f0, k_over_xi, nonideal)
+    nonideal = _polymer_nonideal_params(Float64[])
+    return polymer_langevin_force!(force, x, 1.0, k_over_xi, nonideal)
 end
 
 function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonideal)
     dim = size(x, 1)
     n_atoms = size(x, 2)
-    u = 0.0f0
-    coeff = Float32(k_over_xi) / (2.0f0 * Float32(diffusion))
+    u = 0.0
+    coeff = Float64(k_over_xi) / (2.0 * Float64(diffusion))
     @inbounds for i in 2:n_atoms, d in 1:dim
         u += coeff * (x[d, i] - x[d, i - 1])^2
     end
@@ -259,7 +334,7 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
     min_r2 = 1.0f-12
     @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
         dx1 = x[1, i] - x[1, j]
-        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0f0
+        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0
         raw_r2 = dx1 * dx1 + dx2 * dx2
 
         if nonideal.lj_enabled &&
@@ -269,11 +344,11 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
             sig2_over_r2 = (nonideal.lj_sigma * nonideal.lj_sigma) / r2
             sr6 = sig2_over_r2^3
             sr12 = sr6 * sr6
-            val = 4.0f0 * nonideal.lj_epsilon * (sr12 - sr6)
-            if nonideal.lj_shift && nonideal.lj_cutoff > 0.0f0
+            val = 4.0 * nonideal.lj_epsilon * (sr12 - sr6)
+            if nonideal.lj_shift && nonideal.lj_cutoff > 0.0
                 src2 = (nonideal.lj_sigma / nonideal.lj_cutoff)^2
                 src6 = src2^3
-                val -= 4.0f0 * nonideal.lj_epsilon * (src6^2 - src6)
+                val -= 4.0 * nonideal.lj_epsilon * (src6^2 - src6)
             end
             u += val
         end
@@ -288,7 +363,7 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
     end
 
     if nonideal.conf_enabled
-        strength = Float32(nonideal.conf_strength)
+        strength = Float64(nonideal.conf_strength)
         if nonideal.conf_centered
             for d in 1:dim
                 cm = zero(eltype(x))
@@ -310,20 +385,20 @@ end
 function run_polymer_langevin_simulation(rng::AbstractRNG, cfg::NBodyDataConfig)
     cfg.dim == 2 || error("polymer_langevin is implemented for dim=2.")
     p = cfg.physics_params
-    diffusion = length(p) >= 1 ? p[1] : 1.0f0
-    bond_length = length(p) >= 2 ? p[2] : 1.0f0
-    k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
+    diffusion = length(p) >= 1 ? p[1] : 1.0
+    bond_length = length(p) >= 2 ? p[2] : 1.0
+    k_over_xi = length(p) >= 3 ? p[3] : 3.0 * diffusion / bond_length^2
     nonideal = _polymer_nonideal_params(p)
 
     x = init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length)
     force = similar(x)
-    trajectory = zeros(Float32, cfg.dim, cfg.n_atoms, cfg.total_steps)
-    noise_scale = sqrt(2.0f0 * diffusion * cfg.dt)
+    trajectory = zeros(Float64, cfg.dim, cfg.n_atoms, cfg.total_steps)
+    noise_scale = sqrt(2.0 * diffusion * cfg.dt)
 
     for t in 1:cfg.total_steps
         polymer_langevin_force!(force, x, diffusion, k_over_xi, nonideal)
         x = x .+ cfg.dt .* force .+
-            noise_scale .* randn(rng, Float32, cfg.dim, cfg.n_atoms)
+            noise_scale .* randn(rng, Float64, cfg.dim, cfg.n_atoms)
         trajectory[:, :, t] = center_frame(x)
     end
     return trajectory
@@ -332,13 +407,13 @@ end
 function polymer_langevin_sde_problem(rng::AbstractRNG, cfg::NBodyDataConfig)
     cfg.dim == 2 || error("polymer_langevin is implemented for dim=2.")
     p = cfg.physics_params
-    diffusion = length(p) >= 1 ? p[1] : 1.0f0
-    bond_length = length(p) >= 2 ? p[2] : 1.0f0
-    k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
+    diffusion = length(p) >= 1 ? p[1] : 1.0
+    bond_length = length(p) >= 2 ? p[2] : 1.0
+    k_over_xi = length(p) >= 3 ? p[3] : 3.0 * diffusion / bond_length^2
     nonideal = _polymer_nonideal_params(p)
 
     x0 = vec(init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length))
-    drift = zeros(Float32, cfg.dim, cfg.n_atoms)
+    drift = zeros(Float64, cfg.dim, cfg.n_atoms)
     function f!(du, u, params, t)
         x = reshape(u, cfg.dim, cfg.n_atoms)
         du_mat = reshape(du, cfg.dim, cfg.n_atoms)
@@ -347,7 +422,7 @@ function polymer_langevin_sde_problem(rng::AbstractRNG, cfg::NBodyDataConfig)
         return nothing
     end
 
-    sigma = sqrt(2.0f0 * diffusion)
+    sigma = sqrt(2.0 * diffusion)
     function g!(du, u, params, t)
         fill!(du, sigma)
         return nothing
@@ -361,11 +436,11 @@ function run_polymer_langevin_sde_simulation(rng::AbstractRNG, cfg::NBodyDataCon
                                              save_stride::Int=1,
                                              center::Bool=true)
     prob = polymer_langevin_sde_problem(rng, cfg)
-    saveat = range(0.0f0, cfg.total_steps * cfg.dt;
+    saveat = range(0.0, cfg.total_steps * cfg.dt;
                    length=(cfg.total_steps ÷ save_stride) + 1)
     sol = solve(prob, EM(); dt=cfg.dt, saveat, adaptive=false)
 
-    trajectory = zeros(Float32, cfg.dim, cfg.n_atoms, length(sol.u))
+    trajectory = zeros(Float64, cfg.dim, cfg.n_atoms, length(sol.u))
     for i in eachindex(sol.u)
         frame = reshape(sol.u[i], cfg.dim, cfg.n_atoms)
         trajectory[:, :, i] = center ? center_frame(frame) : frame
@@ -408,6 +483,13 @@ function generate_nbody_dataset(rng::AbstractRNG, cfg::NBodyDataConfig)
         trajectory = run_polymer_langevin_sde_simulation(rng, cfg; center=true)
         return sample_training_batch(rng, trajectory; batch_size=cfg.n_samples,
                                      burn_in=cfg.burn_in)
+    elseif cfg.kind == :rouse_hdf5
+        trajectory = load_rouse_hdf5_dataset(cfg)
+        if cfg.n_samples <= 0 || cfg.n_samples >= size(trajectory, 3)
+            return trajectory
+        end
+        return sample_training_batch(rng, trajectory; batch_size=cfg.n_samples,
+                                     burn_in=0)
     end
     trajectory = run_md_simulation(rng, cfg)
     return sample_training_batch(rng, trajectory; batch_size=cfg.n_samples,

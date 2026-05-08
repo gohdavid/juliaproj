@@ -31,3 +31,11 @@ uniform-temperature polymer Langevin dataset. The polymer is a linear chain with
 adjacent harmonic backbone springs, independent Brownian noise per bead and
 coordinate, and center-of-mass-aligned saved conformations. No correlated-noise
 or correlation-matrix model is used.
+
+The same configs can also train from precomputed Rouse HDF5 snapshots by using
+`data.kind: rouse_hdf5`. The loader reads all matching `traj` datasets into RAM,
+concatenates frames across files, and samples `data.n_samples` equilibrium
+conformations from the combined ensemble. Use `data.source_dir` plus
+`data.source_pattern` for seed-split outputs such as
+`rouse_analysis_seed*.h5`, or provide `data.source_path` / `data.source_paths`
+for explicit files.

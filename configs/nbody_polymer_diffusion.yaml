@@ -1,20 +1,21 @@
 experiment:
   family: nbody_diffusion
-  name: nbody_equivariant_diffusion_polymer_langevin
+  name: nbody_equivariant_diffusion_rouse_hdf5
   seed: 0
 
 runtime:
   use_gpu: true
 
 data:
-  kind: polymer_langevin
+  kind: rouse_hdf5
   dim: 2
-  n_atoms: 16
+  n_atoms: 32
   n_samples: 4000
-  burn_in: 2000
-  total_steps: 12000
-  dt: 0.005
-  physics_params: [1.0, 1.0]
+  burn_in: 0
+  source_dir: outputs/rouse_raw/199149bbf939
+  source_pattern: rouse_analysis_seed*.h5
+  allow_partial: false
+  physics_params: [1.0, 1.0, 3.0]
   center: true
 
 model:

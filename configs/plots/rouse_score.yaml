@@ -1,6 +1,9 @@
 experiment:
   config: configs/experiments/rouse_analysis.yaml
 
+data:
+  prefer_hdf5: true
+
 analysis:
   video: false
   potential: false

@@ -175,7 +175,8 @@ end
 function build_save_times(until_tau::Real, interval_tau::Real, tau_r::Real)
     n_intervals = round(Int, Float64(until_tau) / Float64(interval_tau))
     tau_grid = Float64.(0:n_intervals) .* Float64(interval_tau)
-    if abs(Float64(until_tau) - tau_grid[end]) > 100eps(Float64(until_tau))
+    tolerance = 100eps(max(abs(Float64(until_tau)), abs(tau_grid[end]), 1.0))
+    if abs(Float64(until_tau) - tau_grid[end]) > tolerance
         error("save.until_tau must be an integer multiple of save.interval_tau")
     end
     return tau_grid .* Float64(tau_r), tau_grid
@@ -207,43 +208,43 @@ end
 
 function build_nonideal_params(raw_cfg)
     lj_enabled = cfgflag(raw_cfg, "nonideal.lennard_jones.enabled", false)
-    lj_epsilon = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.epsilon", 0.0f0)
-    lj_sigma = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.sigma", 1.0f0)
-    lj_softening = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.softening", 0.0f0)
-    lj_cutoff = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.cutoff", 0.0f0)
+    lj_epsilon = BoltzFlow.cfgfloat(raw_cfg, "nonideal.lennard_jones.epsilon", 0.0)
+    lj_sigma = BoltzFlow.cfgfloat(raw_cfg, "nonideal.lennard_jones.sigma", 1.0)
+    lj_softening = BoltzFlow.cfgfloat(raw_cfg, "nonideal.lennard_jones.softening", 0.0)
+    lj_cutoff = BoltzFlow.cfgfloat(raw_cfg, "nonideal.lennard_jones.cutoff", 0.0)
     lj_exclude_bonded = cfgflag(raw_cfg, "nonideal.lennard_jones.exclude_bonded", true)
     lj_shift = cfgflag(raw_cfg, "nonideal.lennard_jones.shift", true)
 
     ev_enabled = cfgflag(raw_cfg, "nonideal.excluded_volume.enabled", false)
-    ev_epsilon = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.epsilon", 0.0f0)
-    ev_sigma = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.sigma", 1.0f0)
-    ev_softening = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.softening", 0.0f0)
-    ev_power = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.power", 12.0f0)
-    ev_cutoff = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.cutoff", 0.0f0)
+    ev_epsilon = BoltzFlow.cfgfloat(raw_cfg, "nonideal.excluded_volume.epsilon", 0.0)
+    ev_sigma = BoltzFlow.cfgfloat(raw_cfg, "nonideal.excluded_volume.sigma", 1.0)
+    ev_softening = BoltzFlow.cfgfloat(raw_cfg, "nonideal.excluded_volume.softening", 0.0)
+    ev_power = BoltzFlow.cfgfloat(raw_cfg, "nonideal.excluded_volume.power", 12.0)
+    ev_cutoff = BoltzFlow.cfgfloat(raw_cfg, "nonideal.excluded_volume.cutoff", 0.0)
     ev_exclude_bonded = cfgflag(raw_cfg, "nonideal.excluded_volume.exclude_bonded", true)
 
     conf_enabled = cfgflag(raw_cfg, "nonideal.confinement.enabled", false)
-    conf_strength = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.confinement.strength", 0.0f0)
+    conf_strength = BoltzFlow.cfgfloat(raw_cfg, "nonideal.confinement.strength", 0.0)
     conf_centered = cfgflag(raw_cfg, "nonideal.confinement.centered", true)
 
-    packed = Float32[
-        lj_enabled ? 1.0f0 : 0.0f0,
+    packed = Float64[
+        lj_enabled ? 1.0 : 0.0,
         lj_epsilon,
         lj_sigma,
         lj_softening,
         lj_cutoff,
-        lj_exclude_bonded ? 1.0f0 : 0.0f0,
-        lj_shift ? 1.0f0 : 0.0f0,
-        ev_enabled ? 1.0f0 : 0.0f0,
+        lj_exclude_bonded ? 1.0 : 0.0,
+        lj_shift ? 1.0 : 0.0,
+        ev_enabled ? 1.0 : 0.0,
         ev_epsilon,
         ev_sigma,
         ev_softening,
         ev_power,
         ev_cutoff,
-        ev_exclude_bonded ? 1.0f0 : 0.0f0,
-        conf_enabled ? 1.0f0 : 0.0f0,
+        ev_exclude_bonded ? 1.0 : 0.0,
+        conf_enabled ? 1.0 : 0.0,
         conf_strength,
-        conf_centered ? 1.0f0 : 0.0f0,
+        conf_centered ? 1.0 : 0.0,
     ]
     config = Dict(
         "lennard_jones" => Dict(
@@ -274,7 +275,8 @@ function build_nonideal_params(raw_cfg)
 end
 
 function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim::Int,
-                              n_beads::Int, hdf5_path::AbstractString)
+                              n_beads::Int, hdf5_path::AbstractString;
+                              progress::Bool=true, progress_steps::Int=10_000)
     traj = zeros(Float32, dim, n_beads, length(save_times))
     times = zeros(Float64, length(save_times))
     next_frame = Ref(1)
@@ -319,7 +321,7 @@ function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim:
 
         solve(prob, solver; dt=dt, adaptive=false, callback,
               save_everystep=false, save_start=false, save_end=false,
-              progress=true, progress_steps=10_000)
+              progress, progress_steps)
     end
 
     next_frame[] == length(save_times) + 1 ||
@@ -349,17 +351,19 @@ function main()
 
     dim = BoltzFlow.cfgint(raw_cfg, "rouse.dim", 2)
     n_beads = BoltzFlow.cfgint(raw_cfg, "rouse.n_beads", 32)
-    diffusion = BoltzFlow.cfgfloat32(raw_cfg, "rouse.diffusion", 1.0f0)
-    bond_length = BoltzFlow.cfgfloat32(raw_cfg, "rouse.bond_length", 1.0f0)
-    k_over_xi = BoltzFlow.cfgfloat32(raw_cfg, "rouse.k_over_xi",
-                                     3.0f0 * diffusion / bond_length^2)
+    diffusion = BoltzFlow.cfgfloat(raw_cfg, "rouse.diffusion", 1.0)
+    bond_length = BoltzFlow.cfgfloat(raw_cfg, "rouse.bond_length", 1.0)
+    k_over_xi = BoltzFlow.cfgfloat(raw_cfg, "rouse.k_over_xi",
+                                   3.0 * diffusion / bond_length^2)
     solver_algorithm = String(BoltzFlow.cfgget(raw_cfg, "solver.algorithm", "EM"))
     solver = sde_solver(solver_algorithm)
-    dt = BoltzFlow.cfgfloat32(raw_cfg, "solver.dt", 0.01f0)
-    burn_in_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.burn_in_tau", 0.0f0)
-    until_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.until_tau", 5.0f0)
-    interval_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.interval_tau", 0.05f0)
+    dt = BoltzFlow.cfgfloat(raw_cfg, "solver.dt", 0.01)
+    burn_in_tau = BoltzFlow.cfgfloat(raw_cfg, "save.burn_in_tau", 0.0)
+    until_tau = BoltzFlow.cfgfloat(raw_cfg, "save.until_tau", 5.0)
+    interval_tau = BoltzFlow.cfgfloat(raw_cfg, "save.interval_tau", 0.05)
     stream_hdf5 = BoltzFlow.cfgbool(raw_cfg, "save.stream_hdf5", true)
+    log_progress = BoltzFlow.cfgbool(raw_cfg, "logging.progress", true)
+    progress_steps = BoltzFlow.cfgint(raw_cfg, "logging.progress_steps", 10_000)
     output_path, hdf5_path = output_paths(raw_cfg)
     nonideal_params, nonideal_config = build_nonideal_params(raw_cfg)
 
@@ -376,7 +380,7 @@ function main()
         burn_in=0,
         total_steps=total_steps,
         dt=dt,
-        physics_params=vcat(Float32[diffusion, bond_length, k_over_xi], nonideal_params),
+        physics_params=vcat(Float64[diffusion, bond_length, k_over_xi], nonideal_params),
     )
 
     prob = BoltzFlow.polymer_langevin_sde_problem(rng, sim_cfg)
@@ -384,10 +388,11 @@ function main()
     traj, times = with_logger(logger) do
         if stream_hdf5
             solve_streaming_hdf5(prob, solver, dt64, save_times, save_tau, dim, n_beads,
-                                 hdf5_path)
+                                 hdf5_path; progress=log_progress,
+                                 progress_steps=progress_steps)
         else
             sol = solve(prob, solver; dt=dt64, saveat=save_times, adaptive=false,
-                        progress=true, progress_steps=10_000)
+                        progress=log_progress, progress_steps=progress_steps)
             (solution_to_traj(sol, dim, n_beads), Float64.(sol.t))
         end
     end

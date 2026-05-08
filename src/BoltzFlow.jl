@@ -22,6 +22,7 @@ using Zygote
 using CUDA
 get!(ENV, "GKSwstype", "100")
 using Plots
+using HDF5
 
 export SpringSystem, generate_equilibrium_data, maxwell_boltzmann_sample
 export boltzmann_logp, boltzmann_score
