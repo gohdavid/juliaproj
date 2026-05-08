@@ -1,6 +1,6 @@
 experiment:
-  family: nbody_flow_matching
-  name: nbody_equivariant_fm_static
+  family: nbody_cnf
+  name: nbody_cnf_egnn_static
   seed: 0
 
 runtime:
@@ -13,19 +13,27 @@ data:
   n_samples: 4000
   burn_in: 0
   noise_std: 0.1
-  center: true
 
 model:
-  hidden_dims: [64, 64, 64]
+  name: cnf_egnn
+  kind: egnn
+  equivariant: true
+  hidden_dims: [32, 32]
+  trace: exact
+
+ode:
+  t0: 0.0
+  t1: 1.0
+  abstol: 1.0e-5
+  reltol: 1.0e-5
 
 training:
   epochs: 30
   batch_size: 64
-  learning_rate: 1.0e-3
+  learning_rate: 1.0e-2
 
 sampling:
   n_samples: 1000
-  steps: 64
 
 output:
   dir: runs

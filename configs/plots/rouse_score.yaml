@@ -15,5 +15,5 @@ score:
 
 output:
   dir: outputs
-  experiment_name: rouse_raw
-  score_file: rouse_raw_score_norm2_histogram.png
+  experiment_name: rouse_analysis
+  score_file: rouse_analysis_score_norm2_histogram.png

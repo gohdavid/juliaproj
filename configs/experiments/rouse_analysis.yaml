@@ -50,6 +50,6 @@ save:
 
 output:
   dir: outputs
-  experiment_name: rouse_raw
+  experiment_name: rouse_analysis
   file: rouse_analysis.jls
-  hdf5_file: rouse_analysis.h5
+  hdf5_file: trajectories/rouse_analysis.h5

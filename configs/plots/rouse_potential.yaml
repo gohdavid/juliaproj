@@ -11,5 +11,5 @@ analysis:
 
 output:
   dir: outputs
-  experiment_name: rouse_raw
-  histogram_file: rouse_raw_potential_histogram.png
+  experiment_name: rouse_analysis
+  histogram_file: rouse_analysis_potential_histogram.png

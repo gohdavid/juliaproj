@@ -1,6 +1,6 @@
 experiment:
-  family: nbody_flow_matching
-  name: nbody_equivariant_fm_rouse_hdf5
+  family: nbody_cnf
+  name: nbody_polymer_cnf_egnn_rouse_hdf5
   seed: 0
 
 runtime:
@@ -12,14 +12,24 @@ data:
   n_atoms: 32
   n_samples: 4000
   burn_in: 0
-  source_dir: outputs/rouse_raw/199149bbf939
+  source_dir: outputs/rouse_analysis/bbf5af7c8fcd/trajectories
   source_pattern: rouse_analysis_seed*.h5
   allow_partial: false
   physics_params: [1.0, 1.0, 3.0]
   center: true
 
 model:
+  name: cnf_egnn
+  kind: egnn
+  equivariant: true
   hidden_dims: [64, 64, 64]
+  trace: exact
+
+ode:
+  t0: 0.0
+  t1: 1.0
+  abstol: 1.0e-5
+  reltol: 1.0e-5
 
 training:
   epochs: 30
@@ -28,7 +38,6 @@ training:
 
 sampling:
   n_samples: 1000
-  steps: 64
 
 output:
   dir: runs

@@ -42,4 +42,4 @@ output:
   dir: outputs
   experiment_name: rouse_nonideal_additive
   file: rouse_analysis.jls
-  hdf5_file: rouse_analysis.h5
+  hdf5_file: trajectories/rouse_analysis.h5

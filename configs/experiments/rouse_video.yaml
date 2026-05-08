@@ -39,6 +39,6 @@ save:
 
 output:
   dir: outputs
-  experiment_name: rouse_raw
+  experiment_name: rouse_video
   file: rouse_video.jls
-  hdf5_file: rouse_video.h5
+  hdf5_file: trajectories/rouse_video.h5

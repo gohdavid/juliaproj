@@ -1,6 +1,6 @@
 experiment:
   family: nbody_cnf
-  name: nbody_mlp_static
+  name: nbody_cnf_mlp_static
   seed: 0
 
 runtime:
@@ -15,7 +15,9 @@ data:
   noise_std: 0.1
 
 model:
+  name: cnf_mlp
   kind: mlp
+  equivariant: false
   hidden_dims: [64, 64, 64]
   trace: hutchinson
 

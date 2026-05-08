@@ -1,6 +1,6 @@
 experiment:
-  family: nbody_diffusion
-  name: nbody_equivariant_diffusion_rouse_hdf5
+  family: nbody_flow_matching
+  name: nbody_polymer_flow_matching_egnn_rouse_hdf5
   seed: 0
 
 runtime:
@@ -12,20 +12,16 @@ data:
   n_atoms: 32
   n_samples: 4000
   burn_in: 0
-  source_dir: outputs/rouse_raw/199149bbf939
+  source_dir: outputs/rouse_analysis/bbf5af7c8fcd/trajectories
   source_pattern: rouse_analysis_seed*.h5
   allow_partial: false
   physics_params: [1.0, 1.0, 3.0]
   center: true
 
 model:
+  name: flow_matching_egnn
+  equivariant: true
   hidden_dims: [64, 64, 64]
-
-diffusion:
-  objective: force_matching
-  steps: 100
-  beta_start: 1.0e-4
-  beta_end: 2.0e-2
 
 training:
   epochs: 30
@@ -34,7 +30,7 @@ training:
 
 sampling:
   n_samples: 1000
-  langevin_step_size: 1.0e-3
+  steps: 64
 
 output:
   dir: runs

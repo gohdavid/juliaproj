@@ -1,24 +1,30 @@
 experiment:
   family: nbody_diffusion
-  name: nbody_equivariant_diffusion_static
+  name: nbody_polymer_diffusion_egnn_rouse_hdf5
   seed: 0
 
 runtime:
   use_gpu: true
 
 data:
-  kind: static_asymmetric
+  kind: rouse_hdf5
   dim: 2
-  n_atoms: 10
+  n_atoms: 32
   n_samples: 4000
   burn_in: 0
-  noise_std: 0.1
+  source_dir: outputs/rouse_analysis/bbf5af7c8fcd/trajectories
+  source_pattern: rouse_analysis_seed*.h5
+  allow_partial: false
+  physics_params: [1.0, 1.0, 3.0]
   center: true
 
 model:
+  name: diffusion_egnn
+  equivariant: true
   hidden_dims: [64, 64, 64]
 
 diffusion:
+  objective: force_matching
   steps: 100
   beta_start: 1.0e-4
   beta_end: 2.0e-2
@@ -30,6 +36,7 @@ training:
 
 sampling:
   n_samples: 1000
+  langevin_step_size: 1.0e-3
 
 output:
   dir: runs

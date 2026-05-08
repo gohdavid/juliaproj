@@ -353,16 +353,20 @@ function experiment_output_paths_and_dir(plot_cfg)
         legacy_output = cfgget(exp_cfg, "output.path", nothing)
         default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
         output_file = String(cfgget(exp_cfg, "output.file", default_file))
+        prefer_hdf5 = cfgbool(plot_cfg, "data.prefer_hdf5", false)
+        output_hdf5_file = String(cfgget(exp_cfg, "output.hdf5_file",
+                                         frame_hdf5_path(output_file)))
+        selected_file = prefer_hdf5 ? output_hdf5_file : output_file
         data_dir = project_path(config_output_dir(exp_cfg; default_name="rouse_raw"))
         n_workers = cfgint(exp_cfg, "parallel.workers", 1)
         if n_workers > 1
             seed0 = cfgint(exp_cfg, "seed", 11)
             stride = cfgint(exp_cfg, "parallel.seed_stride", 1)
-            paths = [joinpath(data_dir, seed_filename(output_file, seed0 + (worker_id - 1) * stride))
+            paths = [joinpath(data_dir, seed_filename(selected_file, seed0 + (worker_id - 1) * stride))
                      for worker_id in 1:n_workers]
             return paths, data_dir
         end
-        return [joinpath(data_dir, output_file)], data_dir
+        return [joinpath(data_dir, selected_file)], data_dir
     end
     data_path = project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/rouse.jls")))
     return [data_path], dirname(data_path)
@@ -503,13 +507,18 @@ function make_video_outputs(payload, out_dir, plot_cfg)
                                   "output.frame_dirname", "frames")
     gif_path = output_child_path(plot_cfg, out_dir, "output.gif_path",
                                  "output.gif_file", "rouse_raw.gif")
-    mp4_path = output_child_path(plot_cfg, out_dir, "output.mp4_path",
-                                 "output.mp4_file", "rouse_raw.mp4")
+    mp4_configured = cfgget(plot_cfg, "output.mp4_path", nothing) !== nothing ||
+                     cfgget(plot_cfg, "output.mp4_file", nothing) !== nothing
+    mp4_path = mp4_configured ?
+               output_child_path(plot_cfg, out_dir, "output.mp4_path",
+                                 "output.mp4_file", "rouse_raw.mp4") :
+               nothing
     framerate = cfgint(plot_cfg, "video.framerate", 24)
 
     save_chain_frames(traj, times, tau_r, frame_dir)
     record_gif(traj, times, tau_r, gif_path; framerate)
-    assembled_video = assemble_video(frame_dir, mp4_path; framerate)
+    assembled_video = mp4_path === nothing ? nothing :
+                      assemble_video(frame_dir, mp4_path; framerate)
 
     println("Saved frame directory: $frame_dir")
     if assembled_video !== nothing
