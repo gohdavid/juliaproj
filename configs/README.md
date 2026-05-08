@@ -1,4 +1,11 @@
-Run experiments from the repository root:
+Configuration files are split by workflow:
+
+- `model/`: model-training configs for `src/run_experiment.jl`.
+- `experiments/`: raw Rouse/polymer trajectory-generation configs for
+  `scripts/simulate_rouse_raw.jl`.
+- `plots/`: Rouse analysis/plot configs for `scripts/rouse_score_analytics.jl`.
+
+Run model experiments from the repository root:
 
 ```sh
 julia --project=. src/run_experiment.jl configs/model/nbody_cnf_mlp.yaml
