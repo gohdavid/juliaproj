@@ -1,4 +1,10 @@
-seed: 12
+seed: 0
+
+parallel:
+  workers: 32
+  seed_stride: 1
+  julia_num_threads: 1
+  log_dir: logs
 
 rouse:
   dim: 2
@@ -35,7 +41,7 @@ solver:
 
 save:
   burn_in_tau: 20.0
-  until_tau: 8000.0
+  until_tau: 10000.0
   interval_tau: 2.0
 
 output:

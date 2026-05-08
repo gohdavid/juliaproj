@@ -1,6 +1,6 @@
 export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
 export build_diffusion_model, init_diffusion_params, diffusion_loss
-export train_diffusion_adam, generate_diffusion_samples
+export train_diffusion_adam, generate_diffusion_samples, predict_diffusion_score
 
 struct EquivariantDiffusionModel
     dim::Int
@@ -17,6 +17,15 @@ struct NBodyDiffusionContext
     betas::Vector{Float32}
     alphas::Vector{Float32}
     alpha_bars::Vector{Float32}
+    objective::Symbol
+    langevin_step_size::Float32
+end
+
+function NBodyDiffusionContext(model::EquivariantDiffusionModel, device, n_steps::Int,
+                               betas::Vector{Float32}, alphas::Vector{Float32},
+                               alpha_bars::Vector{Float32})
+    return NBodyDiffusionContext(model, device, n_steps, betas, alphas, alpha_bars,
+                                 :denoising, 1.0f-3)
 end
 
 struct DiffusionResult
@@ -88,8 +97,33 @@ function _equivariant_diffusion_prediction(x, t, params;
     return center_positions(reshape(pred, dim, n_atoms, batch_size))
 end
 
+function predict_diffusion_score(ctx::NBodyDiffusionContext, params, x_batch)
+    model = ctx.model
+    batch_size = size(x_batch, 3)
+    x = x_batch |> ctx.device
+    t = zeros(Float32, 1, 1, batch_size) |> ctx.device
+    h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, batch_size, ctx.device)
+    return _equivariant_diffusion_prediction(
+        x, t, params; model, h_i_flat, h_j_flat, mask)
+end
+
+function force_matching_loss(ctx::NBodyDiffusionContext, params, x_batch, score_batch)
+    pred = predict_diffusion_score(ctx, params, x_batch)
+    target = score_batch |> ctx.device
+    return sum(abs2, pred .- Zygote.dropgrad(target)) / Float32(length(pred))
+end
+
 function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
+                        score_batch=nothing,
                         rng::AbstractRNG=Random.default_rng())
+    if ctx.objective == :force_matching
+        score_batch === nothing &&
+            error("diffusion objective force_matching requires score targets.")
+        return force_matching_loss(ctx, params, x_batch, score_batch)
+    elseif ctx.objective != :denoising
+        error("Unknown diffusion objective: $(ctx.objective)")
+    end
+
     model = ctx.model
     dim, n_atoms, batch_size = size(x_batch)
     x0 = x_batch |> ctx.device
@@ -107,9 +141,13 @@ function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
 end
 
 function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
+                              score_targets=nothing,
                               epochs::Int=25, batch_size::Int=64,
                               learning_rate::Real=1f-3,
                               rng::AbstractRNG=Xoshiro(42))
+    if ctx.objective == :force_matching && score_targets === nothing
+        error("force_matching diffusion training requires score_targets.")
+    end
     n_samples = size(train_data, 3)
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
     loss_history = Float32[]
@@ -121,10 +159,11 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
             batch_stop = min(batch_start + batch_size - 1, n_samples)
             batch_idx = shuffled_idx[batch_start:batch_stop]
             x_batch = train_data[:, :, batch_idx]
+            score_batch = score_targets === nothing ? nothing : score_targets[:, :, batch_idx]
             local_batch_size = length(batch_idx)
 
             loss, grads = Zygote.withgradient(
-                p -> diffusion_loss(ctx, p, x_batch; rng), params)
+                p -> diffusion_loss(ctx, p, x_batch; score_batch, rng), params)
             grad_params = grads[1]
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
@@ -148,6 +187,22 @@ function generate_diffusion_samples(ctx::NBodyDiffusionContext, params,
     x = center_positions(randn(rng, Float32, model.dim, model.n_atoms, n_samples)) |>
         ctx.device
     h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, n_samples, ctx.device)
+
+    if ctx.objective == :force_matching
+        dt = ctx.langevin_step_size
+        noise_scale = sqrt(2.0f0 * dt)
+        t = zeros(Float32, 1, 1, n_samples) |> ctx.device
+        for _ in 1:ctx.n_steps
+            score = _equivariant_diffusion_prediction(
+                x, t, params; model, h_i_flat, h_j_flat, mask)
+            z = center_positions(randn(rng, Float32, model.dim, model.n_atoms, n_samples)) |>
+                ctx.device
+            x = center_positions(x .+ dt .* score .+ noise_scale .* z)
+        end
+        return x
+    elseif ctx.objective != :denoising
+        error("Unknown diffusion objective: $(ctx.objective)")
+    end
 
     for step in ctx.n_steps:-1:1
         beta = ctx.betas[step]

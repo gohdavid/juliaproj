@@ -92,6 +92,86 @@ function output_paths(raw_cfg)
     return output_path, hdf5_path
 end
 
+function cfgset!(cfg::AbstractDict, path::AbstractString, value)
+    cur = cfg
+    parts = split(path, ".")
+    for key in parts[1:end-1]
+        if !(haskey(cur, key) && cur[key] isa AbstractDict)
+            cur[key] = Dict{String,Any}()
+        end
+        cur = cur[key]
+    end
+    cur[parts[end]] = value
+    return cfg
+end
+
+function seed_filename(filename::AbstractString, seed::Int)
+    root, ext = splitext(filename)
+    return string(root, "_seed", seed, ext)
+end
+
+function worker_config(raw_cfg, worker_id::Int)
+    cfg = deepcopy(raw_cfg)
+    seed = worker_seed(raw_cfg, worker_id)
+    output_file = String(BoltzFlow.cfgget(cfg, "output.file", "rouse.jls"))
+    hdf5_file = String(BoltzFlow.cfgget(cfg, "output.hdf5_file",
+                                        seed_filename(frame_hdf5_path(output_file), seed)))
+    cfgset!(cfg, "output.file", seed_filename(output_file, seed))
+    cfgset!(cfg, "output.hdf5_file", seed_filename(hdf5_file, seed))
+    return cfg
+end
+
+function worker_seed(raw_cfg, worker_id::Int)
+    seed = BoltzFlow.cfgint(raw_cfg, "seed", 11)
+    stride = BoltzFlow.cfgint(raw_cfg, "parallel.seed_stride", 1)
+    return seed + (worker_id - 1) * stride
+end
+
+function parse_worker_id(args)
+    worker_id = nothing
+    positional = String[]
+    for arg in args
+        if startswith(arg, "--worker-id=")
+            worker_id = parse(Int, split(arg, "="; limit=2)[2])
+        else
+            push!(positional, arg)
+        end
+    end
+    return positional, worker_id
+end
+
+function run_parallel_parent(cfg_path::AbstractString, raw_cfg, n_workers::Int)
+    script_path = abspath(@__FILE__)
+    log_dir = project_path(String(BoltzFlow.cfgget(raw_cfg, "parallel.log_dir", "logs")))
+    child_threads = string(BoltzFlow.cfgint(raw_cfg, "parallel.julia_num_threads", 1))
+    mkpath(log_dir)
+
+    procs = []
+    for worker_id in 1:n_workers
+        seed = worker_seed(raw_cfg, worker_id)
+        log_path = joinpath(log_dir, "rouse_analysis_seed$(seed).log")
+        cmd = `$(Base.julia_cmd()) --project=$(PROJECT_ROOT) $script_path $cfg_path --worker-id=$worker_id`
+        env = copy(ENV)
+        env["JULIA_NUM_THREADS"] = child_threads
+        env["OPENBLAS_NUM_THREADS"] = "1"
+        open(log_path, "w") do io
+            proc = run(pipeline(setenv(cmd, env); stdout=io, stderr=io); wait=false)
+            push!(procs, proc)
+            println("started worker $worker_id seed=$seed pid=$(getpid(proc)) log=$log_path")
+        end
+    end
+
+    failed = Int[]
+    for (worker_id, proc) in enumerate(procs)
+        wait(proc)
+        if !success(proc)
+            push!(failed, worker_id)
+        end
+    end
+    isempty(failed) || error("Rouse workers failed: $(join(failed, ", "))")
+    println("Completed $n_workers parallel Rouse workers.")
+end
+
 function build_save_times(until_tau::Real, interval_tau::Real, tau_r::Real)
     n_intervals = round(Int, Float64(until_tau) / Float64(interval_tau))
     tau_grid = Float64.(0:n_intervals) .* Float64(interval_tau)
@@ -248,11 +328,23 @@ function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim:
 end
 
 function main()
-    length(ARGS) == 1 || error("Usage: julia --project=. scripts/simulate_rouse_raw.jl <config.yaml>")
-    cfg_path = project_path(ARGS[1])
+    positional, worker_id = parse_worker_id(ARGS)
+    length(positional) == 1 ||
+        error("Usage: julia --project=. scripts/simulate_rouse_raw.jl <config.yaml> [--worker-id=N]")
+    cfg_path = project_path(positional[1])
     raw_cfg = BoltzFlow.load_yaml_config(cfg_path)
 
-    seed = BoltzFlow.cfgint(raw_cfg, "seed", 11)
+    n_workers = BoltzFlow.cfgint(raw_cfg, "parallel.workers", 1)
+    if worker_id === nothing && n_workers > 1
+        run_parallel_parent(cfg_path, raw_cfg, n_workers)
+        return nothing
+    elseif worker_id !== nothing
+        1 <= worker_id <= n_workers || error("--worker-id=$worker_id outside 1:$n_workers")
+        raw_cfg = worker_config(raw_cfg, worker_id)
+    end
+
+    seed = worker_id === nothing ? BoltzFlow.cfgint(raw_cfg, "seed", 11) :
+           worker_seed(BoltzFlow.load_yaml_config(cfg_path), worker_id)
     rng = Xoshiro(seed)
 
     dim = BoltzFlow.cfgint(raw_cfg, "rouse.dim", 2)
@@ -333,6 +425,7 @@ function main()
     @printf "tau_R: %.4f\n" tau_r
     @printf "burn-in: %.1f tau_R\n" burn_in_tau
     @printf "frames: %d every %.3f tau_R through %.1f tau_R after burn-in\n" size(traj, 3) interval_tau until_tau
+    worker_id === nothing || @printf "worker: %d seed: %d\n" worker_id seed
 end
 
 main()
