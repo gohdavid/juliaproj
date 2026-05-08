@@ -7,10 +7,10 @@ analysis:
   score: true
 
 score:
-  analytic_samples: 2000000
-  bins: 60
-  analytic_bins: 240
+  bins: 120
+  analytic_points: 1200
 
 output:
-  dir: outputs/rouse_raw
-  score_path: outputs/rouse_raw/rouse_raw_score_norm2_histogram.png
+  dir: outputs
+  experiment_name: rouse_raw
+  score_file: rouse_raw_score_norm2_histogram.png

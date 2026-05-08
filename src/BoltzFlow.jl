@@ -41,6 +41,8 @@ export generate_flow_matching_samples, center_positions, pairwise_distance_mae
 export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
 export build_diffusion_model, init_diffusion_params, train_diffusion_adam
 export generate_diffusion_samples
+export config_hash, config_output_dir
+export polymer_langevin_potential, polymer_langevin_score!, polymer_nonideal_params
 
 # ============================================================
 # §1  Spring System (toy data)

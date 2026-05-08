@@ -1,6 +1,8 @@
 using Dates
+using SHA
 
 export load_yaml_config, cfgget, cfgsymbol, cfgbool, cfgint, cfgfloat, cfgfloat32
+export config_hash, config_output_dir
 
 const ConfigDict = Dict{String,Any}
 
@@ -108,3 +110,46 @@ cfgfloat(cfg::AbstractDict, path::AbstractString, default) =
     Float64(cfgget(cfg, path, default))
 cfgfloat32(cfg::AbstractDict, path::AbstractString, default) =
     Float32(cfgget(cfg, path, default))
+
+function _canonical_config(value)
+    if value isa AbstractDict
+        parts = String[]
+        for key in sort!(collect(keys(value)); by=string)
+            push!(parts, repr(String(key)) * ":" * _canonical_config(value[key]))
+        end
+        return "{" * join(parts, ",") * "}"
+    elseif value isa AbstractVector
+        return "[" * join((_canonical_config(item) for item in value), ",") * "]"
+    elseif value === nothing
+        return "nothing"
+    elseif value isa AbstractString
+        return repr(String(value))
+    elseif value isa Symbol
+        return repr(String(value))
+    else
+        return repr(value)
+    end
+end
+
+function _drop_top_level(cfg::AbstractDict, exclude)
+    excluded = Set(String.(exclude))
+    return Dict{String,Any}(
+        String(key) => value for (key, value) in cfg
+        if !(String(key) in excluded)
+    )
+end
+
+function config_hash(cfg::AbstractDict; n_chars::Int=12, exclude=())
+    n_chars >= 3 || error("config_hash needs at least 3 characters")
+    digest = bytes2hex(sha256(_canonical_config(_drop_top_level(cfg, exclude))))
+    return digest[begin:min(end, n_chars)]
+end
+
+function config_output_dir(cfg::AbstractDict; default_root::AbstractString="outputs",
+                           default_name::AbstractString="experiment")
+    root = String(cfgget(cfg, "output.dir", default_root))
+    name = String(cfgget(cfg, "output.experiment_name",
+                         cfgget(cfg, "experiment.name", default_name)))
+    digest = config_hash(cfg; exclude=("output",))
+    return joinpath(root, name, digest)
+end

@@ -12,7 +12,11 @@ julia --project=. src/run_experiment.jl configs/nbody_polymer_diffusion.yaml
 
 The n-body configs expose the same knobs that were hard-coded in the notebooks:
 data source, atom count, model type, hidden dimensions, trace estimator, ODE
-tolerances, optimizer settings, sample count, output directory, and seed.
+tolerances, optimizer settings, sample count, output root, and seed. Configured
+outputs are written under `<output.dir>/<experiment name>/<config-hash>`,
+where the hash is computed from the non-output config fields.
+Derived plot artifacts are written under the referenced data directory as
+`<output.dir>/<experiment name>/<data-config-hash>/figures/<plot-config-hash>`.
 
 `nbody_flow_matching.yaml` runs a center-of-mass-normalized E(n)-equivariant
 conditional flow-matching baseline. It reports a pairwise-distance MAE metric

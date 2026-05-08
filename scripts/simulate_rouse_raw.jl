@@ -34,6 +34,8 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 include(joinpath(@__DIR__, "..", "src", "BoltzFlow.jl"))
 
 using .BoltzFlow
+using DiffEqCallbacks: PresetTimeCallback
+using HDF5
 using Logging
 using ProgressLogging: ProgressLevel
 using Random
@@ -49,8 +51,8 @@ function project_path(path::AbstractString)
 end
 
 function rouse_relaxation_time(n::Int, k_over_xi::Real)
-    lambda1 = 2.0f0 * (1.0f0 - cos(Float32(pi) / Float32(n)))
-    return 1.0f0 / (Float32(k_over_xi) * lambda1)
+    lambda1 = 2.0 * (1.0 - cos(pi / Float64(n)))
+    return 1.0 / (Float64(k_over_xi) * lambda1)
 end
 
 function solution_to_traj(sol, dim::Int, n_beads::Int)
@@ -61,19 +63,188 @@ function solution_to_traj(sol, dim::Int, n_beads::Int)
     return traj
 end
 
+function frame_hdf5_path(output_path::AbstractString)
+    root, ext = splitext(output_path)
+    return isempty(ext) ? string(output_path, ".h5") : string(root, ".h5")
+end
+
+function output_paths(raw_cfg)
+    legacy_output = BoltzFlow.cfgget(raw_cfg, "output.path", nothing)
+    output_dir = BoltzFlow.cfgget(raw_cfg, "output.dir", nothing)
+
+    if output_dir !== nothing
+        out_dir = project_path(BoltzFlow.config_output_dir(raw_cfg; default_name="rouse_raw"))
+        default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
+        output_file = String(BoltzFlow.cfgget(raw_cfg, "output.file", default_file))
+        output_path = joinpath(out_dir, output_file)
+
+        legacy_hdf5 = BoltzFlow.cfgget(raw_cfg, "output.hdf5_path", nothing)
+        default_hdf5 = legacy_hdf5 === nothing ? basename(frame_hdf5_path(output_path)) :
+                       basename(String(legacy_hdf5))
+        hdf5_file = String(BoltzFlow.cfgget(raw_cfg, "output.hdf5_file", default_hdf5))
+        return output_path, joinpath(out_dir, hdf5_file)
+    end
+
+    output_path = project_path(String(BoltzFlow.cfgget(raw_cfg, "output.path",
+                                                       "outputs/rouse_raw/rouse.jls")))
+    hdf5_path = project_path(String(BoltzFlow.cfgget(raw_cfg, "output.hdf5_path",
+                                                     frame_hdf5_path(output_path))))
+    return output_path, hdf5_path
+end
+
 function build_save_times(until_tau::Real, interval_tau::Real, tau_r::Real)
     n_intervals = round(Int, Float64(until_tau) / Float64(interval_tau))
-    tau_grid = Float32.(0:n_intervals) .* Float32(interval_tau)
-    if abs(Float32(until_tau) - tau_grid[end]) > 100eps(Float32(until_tau))
+    tau_grid = Float64.(0:n_intervals) .* Float64(interval_tau)
+    if abs(Float64(until_tau) - tau_grid[end]) > 100eps(Float64(until_tau))
         error("save.until_tau must be an integer multiple of save.interval_tau")
     end
-    return tau_grid .* Float32(tau_r), tau_grid
+    return tau_grid .* Float64(tau_r), tau_grid
 end
 
 function build_save_times(burn_in_tau::Real, until_tau::Real, interval_tau::Real,
                           tau_r::Real)
     save_times, save_tau = build_save_times(until_tau, interval_tau, tau_r)
-    return save_times .+ Float32(burn_in_tau) .* Float32(tau_r), save_tau
+    return save_times .+ Float64(burn_in_tau) .* Float64(tau_r), save_tau
+end
+
+function sde_solver(name)
+    normalized = lowercase(replace(String(name), r"[-_\s]" => ""))
+    if normalized == "em"
+        return EM()
+    elseif normalized == "eulerheun"
+        return EulerHeun()
+    elseif normalized == "rkmil"
+        return RKMil()
+    elseif normalized == "sosra"
+        return SOSRA()
+    end
+    error("Unsupported solver.algorithm=$(repr(name)); supported values are EM, EulerHeun, RKMil, SOSRA")
+end
+
+function cfgflag(cfg, path::AbstractString, default::Bool=false)
+    return Bool(BoltzFlow.cfgget(cfg, path, default))
+end
+
+function build_nonideal_params(raw_cfg)
+    lj_enabled = cfgflag(raw_cfg, "nonideal.lennard_jones.enabled", false)
+    lj_epsilon = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.epsilon", 0.0f0)
+    lj_sigma = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.sigma", 1.0f0)
+    lj_softening = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.softening", 0.0f0)
+    lj_cutoff = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.lennard_jones.cutoff", 0.0f0)
+    lj_exclude_bonded = cfgflag(raw_cfg, "nonideal.lennard_jones.exclude_bonded", true)
+    lj_shift = cfgflag(raw_cfg, "nonideal.lennard_jones.shift", true)
+
+    ev_enabled = cfgflag(raw_cfg, "nonideal.excluded_volume.enabled", false)
+    ev_epsilon = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.epsilon", 0.0f0)
+    ev_sigma = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.sigma", 1.0f0)
+    ev_softening = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.softening", 0.0f0)
+    ev_power = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.power", 12.0f0)
+    ev_cutoff = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.excluded_volume.cutoff", 0.0f0)
+    ev_exclude_bonded = cfgflag(raw_cfg, "nonideal.excluded_volume.exclude_bonded", true)
+
+    conf_enabled = cfgflag(raw_cfg, "nonideal.confinement.enabled", false)
+    conf_strength = BoltzFlow.cfgfloat32(raw_cfg, "nonideal.confinement.strength", 0.0f0)
+    conf_centered = cfgflag(raw_cfg, "nonideal.confinement.centered", true)
+
+    packed = Float32[
+        lj_enabled ? 1.0f0 : 0.0f0,
+        lj_epsilon,
+        lj_sigma,
+        lj_softening,
+        lj_cutoff,
+        lj_exclude_bonded ? 1.0f0 : 0.0f0,
+        lj_shift ? 1.0f0 : 0.0f0,
+        ev_enabled ? 1.0f0 : 0.0f0,
+        ev_epsilon,
+        ev_sigma,
+        ev_softening,
+        ev_power,
+        ev_cutoff,
+        ev_exclude_bonded ? 1.0f0 : 0.0f0,
+        conf_enabled ? 1.0f0 : 0.0f0,
+        conf_strength,
+        conf_centered ? 1.0f0 : 0.0f0,
+    ]
+    config = Dict(
+        "lennard_jones" => Dict(
+            "enabled" => lj_enabled,
+            "epsilon" => lj_epsilon,
+            "sigma" => lj_sigma,
+            "softening" => lj_softening,
+            "cutoff" => lj_cutoff,
+            "exclude_bonded" => lj_exclude_bonded,
+            "shift" => lj_shift,
+        ),
+        "excluded_volume" => Dict(
+            "enabled" => ev_enabled,
+            "epsilon" => ev_epsilon,
+            "sigma" => ev_sigma,
+            "softening" => ev_softening,
+            "power" => ev_power,
+            "cutoff" => ev_cutoff,
+            "exclude_bonded" => ev_exclude_bonded,
+        ),
+        "confinement" => Dict(
+            "enabled" => conf_enabled,
+            "strength" => conf_strength,
+            "centered" => conf_centered,
+        ),
+    )
+    return packed, config
+end
+
+function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim::Int,
+                              n_beads::Int, hdf5_path::AbstractString)
+    traj = zeros(Float32, dim, n_beads, length(save_times))
+    times = zeros(Float64, length(save_times))
+    next_frame = Ref(1)
+
+    mkpath(dirname(hdf5_path))
+    h5open(hdf5_path, "w") do h5
+        attrs(h5)["format"] = "rouse_raw_hdf5_v1"
+        attrs(h5)["dim"] = dim
+        attrs(h5)["n_beads"] = n_beads
+        attrs(h5)["n_frames"] = length(save_times)
+        h5["traj"] = zeros(Float32, dim, n_beads, length(save_times))
+        h5["times"] = zeros(Float64, length(save_times))
+        h5["times_tau"] = Float64.(save_tau)
+        h5["written"] = zeros(Int32, 1)
+        flush(h5)
+
+        function write_frame!(u, t)
+            i = next_frame[]
+            i > length(save_times) && return nothing
+            frame = reshape(u, dim, n_beads)
+            traj[:, :, i] .= frame
+            times[i] = Float64(t)
+            h5["traj"][:, :, i] = traj[:, :, i]
+            h5["times"][i] = times[i]
+            h5["written"][1] = Int32(i)
+            flush(h5)
+            next_frame[] = i + 1
+            return nothing
+        end
+
+        if !isempty(save_times) && iszero(save_times[1])
+            write_frame!(prob.u0, 0.0f0)
+        end
+
+        function affect!(integrator)
+            write_frame!(integrator.u, integrator.t)
+            return nothing
+        end
+        callback_times = typeof(dt).(save_times[next_frame[]:end])
+        callback = PresetTimeCallback(callback_times, affect!;
+                                      save_positions=(false, false))
+
+        solve(prob, solver; dt=dt, adaptive=false, callback,
+              save_everystep=false, save_start=false, save_end=false,
+              progress=true, progress_steps=10_000)
+    end
+
+    next_frame[] == length(save_times) + 1 ||
+        error("Only wrote $(next_frame[] - 1) of $(length(save_times)) requested frames")
+    return traj, times
 end
 
 function main()
@@ -90,16 +261,20 @@ function main()
     bond_length = BoltzFlow.cfgfloat32(raw_cfg, "rouse.bond_length", 1.0f0)
     k_over_xi = BoltzFlow.cfgfloat32(raw_cfg, "rouse.k_over_xi",
                                      3.0f0 * diffusion / bond_length^2)
+    solver_algorithm = String(BoltzFlow.cfgget(raw_cfg, "solver.algorithm", "EM"))
+    solver = sde_solver(solver_algorithm)
     dt = BoltzFlow.cfgfloat32(raw_cfg, "solver.dt", 0.01f0)
     burn_in_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.burn_in_tau", 0.0f0)
     until_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.until_tau", 5.0f0)
     interval_tau = BoltzFlow.cfgfloat32(raw_cfg, "save.interval_tau", 0.05f0)
-    output_path = project_path(String(BoltzFlow.cfgget(raw_cfg, "output.path",
-                                                       "outputs/rouse_raw/rouse.jls")))
+    stream_hdf5 = BoltzFlow.cfgbool(raw_cfg, "save.stream_hdf5", true)
+    output_path, hdf5_path = output_paths(raw_cfg)
+    nonideal_params, nonideal_config = build_nonideal_params(raw_cfg)
 
     tau_r = rouse_relaxation_time(n_beads, k_over_xi)
     save_times, save_tau = build_save_times(burn_in_tau, until_tau, interval_tau, tau_r)
-    total_steps = ceil(Int, save_times[end] / dt)
+    dt64 = Float64(dt)
+    total_steps = ceil(Int, save_times[end] / dt64) + 2
 
     sim_cfg = BoltzFlow.NBodyDataConfig(
         kind=:polymer_langevin,
@@ -109,16 +284,21 @@ function main()
         burn_in=0,
         total_steps=total_steps,
         dt=dt,
-        physics_params=Float32[diffusion, bond_length, k_over_xi],
+        physics_params=vcat(Float32[diffusion, bond_length, k_over_xi], nonideal_params),
     )
 
     prob = BoltzFlow.polymer_langevin_sde_problem(rng, sim_cfg)
     logger = TerminalLogger(stderr, ProgressLevel; always_flush=true)
-    sol = with_logger(logger) do
-        solve(prob, EM(); dt=dt, saveat=save_times, adaptive=false,
-              progress=true, progress_steps=10_000)
+    traj, times = with_logger(logger) do
+        if stream_hdf5
+            solve_streaming_hdf5(prob, solver, dt64, save_times, save_tau, dim, n_beads,
+                                 hdf5_path)
+        else
+            sol = solve(prob, solver; dt=dt64, saveat=save_times, adaptive=false,
+                        progress=true, progress_steps=10_000)
+            (solution_to_traj(sol, dim, n_beads), Float64.(sol.t))
+        end
     end
-    traj = solution_to_traj(sol, dim, n_beads)
 
     payload = Dict(
         "config_path" => cfg_path,
@@ -129,13 +309,16 @@ function main()
             "diffusion" => diffusion,
             "bond_length" => bond_length,
             "k_over_xi" => k_over_xi,
+            "solver_algorithm" => solver_algorithm,
             "dt" => dt,
             "tau_r" => tau_r,
             "burn_in_tau" => burn_in_tau,
             "until_tau" => until_tau,
             "interval_tau" => interval_tau,
+            "hdf5_path" => stream_hdf5 ? hdf5_path : nothing,
+            "nonideal" => nonideal_config,
         ),
-        "times" => Float32.(sol.t),
+        "times" => times,
         "times_tau" => save_tau,
         "traj" => traj,
     )
@@ -144,7 +327,9 @@ function main()
     serialize(output_path, payload)
 
     println("Saved raw Rouse trajectory: $output_path")
+    stream_hdf5 && println("Saved HDF5 trajectory:     $hdf5_path")
     @printf "config: %s\n" cfg_path
+    @printf "solver: %s\n" solver_algorithm
     @printf "tau_R: %.4f\n" tau_r
     @printf "burn-in: %.1f tau_R\n" burn_in_tau
     @printf "frames: %d every %.3f tau_R through %.1f tau_R after burn-in\n" size(traj, 3) interval_tau until_tau

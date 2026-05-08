@@ -28,6 +28,14 @@ Therefore `||score(X)||²` is a weighted chi-square random variable:
     ||score||² = sum_{p=1}^{N-1} sum_{a=1}^{dim}
                  ((k_over_xi / D) * λ_p) * χ²_{p,a}(1).
 
+For the 2D chain used here, the two spatial copies for each Rouse mode combine
+into one exponential random variable. The exact PDF is the hypoexponential
+density
+
+    f(s) = sum_p c_p / θ_p * exp(-s / θ_p),
+    θ_p = 2 * (k_over_xi / D) * λ_p,
+    c_p = prod_{q≠p} θ_p / (θ_p - θ_q).
+
 For potential diagnostics, the trajectory is expected to be sampled at a long
 interval, e.g. every `1τ_R` or `2τ_R`, where `τ_R` is the slowest Rouse
 relaxation time. Samples spaced by `1τ_R` are not perfectly independent in a
@@ -58,12 +66,13 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 using CairoMakie
 using Distributions
-using Random
 using Serialization
 using Statistics
 using Printf
 
 include(joinpath(@__DIR__, "..", "src", "config.jl"))
+include(joinpath(@__DIR__, "..", "src", "BoltzFlow.jl"))
+using .BoltzFlow
 
 const PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
 
@@ -71,19 +80,61 @@ function project_path(path::AbstractString)
     return isabspath(path) ? path : joinpath(PROJECT_ROOT, path)
 end
 
-function analytic_potential(x, diffusion::Real, k_over_xi::Real)
-    bonds = x[:, 2:end] .- x[:, 1:end-1]
-    return Float32(k_over_xi) / (2.0f0 * Float32(diffusion)) * sum(abs2, bonds)
+function output_child_path(cfg, out_dir::AbstractString, path_key::AbstractString,
+                           file_key::AbstractString, default_file::AbstractString)
+    file = cfgget(cfg, file_key, nothing)
+    file !== nothing && return joinpath(out_dir, String(file))
+
+    legacy_path = cfgget(cfg, path_key, nothing)
+    legacy_path !== nothing && return joinpath(out_dir, basename(String(legacy_path)))
+
+    return joinpath(out_dir, default_file)
 end
 
-function analytic_score(x, diffusion::Real, k_over_xi::Real)
+function nonideal_param_vector(sim_cfg)
+    nonideal = get(sim_cfg, "nonideal", nothing)
+    nonideal === nothing && return Float32[]
+    lj = get(nonideal, "lennard_jones", Dict())
+    ev = get(nonideal, "excluded_volume", Dict())
+    conf = get(nonideal, "confinement", Dict())
+    return Float32[
+        get(lj, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(lj, "epsilon", 0.0f0)),
+        Float32(get(lj, "sigma", 1.0f0)),
+        Float32(get(lj, "softening", 0.0f0)),
+        Float32(get(lj, "cutoff", 0.0f0)),
+        get(lj, "exclude_bonded", true) ? 1.0f0 : 0.0f0,
+        get(lj, "shift", true) ? 1.0f0 : 0.0f0,
+        get(ev, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(ev, "epsilon", 0.0f0)),
+        Float32(get(ev, "sigma", 1.0f0)),
+        Float32(get(ev, "softening", 0.0f0)),
+        Float32(get(ev, "power", 12.0f0)),
+        Float32(get(ev, "cutoff", 0.0f0)),
+        get(ev, "exclude_bonded", true) ? 1.0f0 : 0.0f0,
+        get(conf, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(conf, "strength", 0.0f0)),
+        get(conf, "centered", true) ? 1.0f0 : 0.0f0,
+    ]
+end
+
+function nonideal_enabled(sim_cfg)
+    nonideal = get(sim_cfg, "nonideal", nothing)
+    nonideal === nothing && return false
+    return get(get(nonideal, "lennard_jones", Dict()), "enabled", false) ||
+           get(get(nonideal, "excluded_volume", Dict()), "enabled", false) ||
+           get(get(nonideal, "confinement", Dict()), "enabled", false)
+end
+
+function analytic_potential(x, diffusion::Real, k_over_xi::Real, sim_cfg)
+    nonideal = BoltzFlow.polymer_nonideal_params(nonideal_param_vector(sim_cfg))
+    return BoltzFlow.polymer_langevin_potential(x, diffusion, k_over_xi, nonideal)
+end
+
+function analytic_score(x, diffusion::Real, k_over_xi::Real, sim_cfg)
     score = zeros(Float32, size(x))
-    @inbounds for i in 2:size(x, 2)
-        r = x[:, i] .- x[:, i - 1]
-        drift = Float32(k_over_xi) .* r
-        score[:, i] .-= drift ./ Float32(diffusion)
-        score[:, i - 1] .+= drift ./ Float32(diffusion)
-    end
+    nonideal = BoltzFlow.polymer_nonideal_params(nonideal_param_vector(sim_cfg))
+    BoltzFlow.polymer_langevin_score!(score, x, diffusion, k_over_xi, nonideal)
     return score
 end
 
@@ -92,16 +143,31 @@ function rouse_laplacian_eigenvalues(n_beads::Int)
             for p in 1:(n_beads - 1)]
 end
 
-function analytic_score_norm2_samples(rng, dim::Int, n_beads::Int,
-                                      diffusion::Real, k_over_xi::Real,
-                                      n_samples::Int)
+function score_norm2_mean_var(dim::Int, n_beads::Int, diffusion::Real,
+                              k_over_xi::Real)
     lambdas = rouse_laplacian_eigenvalues(n_beads)
     weights = Float32(k_over_xi / diffusion) .* lambdas
-    samples = zeros(Float32, n_samples)
-    for weight in weights, _ in 1:dim
-        samples .+= weight .* Float32.(rand(rng, Chisq(1), n_samples))
+    mean_val = Float32(dim) * sum(weights)
+    var_val = 2.0f0 * Float32(dim) * sum(abs2, weights)
+    return mean_val, var_val
+end
+
+function exact_score_norm2_pdf_2d(xs, n_beads::Int, diffusion::Real,
+                                  k_over_xi::Real)
+    lambdas = rouse_laplacian_eigenvalues(n_beads)
+    theta = BigFloat.(2.0f0 .* Float32(k_over_xi / diffusion) .* lambdas)
+    coeffs = BigFloat[]
+    for i in eachindex(theta)
+        c = big"1"
+        for j in eachindex(theta)
+            i == j && continue
+            c *= theta[i] / (theta[i] - theta[j])
+        end
+        push!(coeffs, c)
     end
-    return samples
+    return [Float64(sum((coeffs[i] / theta[i]) * exp(-BigFloat(x) / theta[i])
+                        for i in eachindex(theta)))
+            for x in xs]
 end
 
 function chain_points(x)
@@ -176,7 +242,7 @@ function assemble_video(frame_dir, video_path; framerate=24)
 end
 
 function plot_potential_histogram(potentials, expected_u, dof, se_independent,
-                                  se_observed, out_path)
+                                  se_observed, out_path; ideal_reference::Bool=true)
     dist = Gamma(Float64(dof) / 2, 1.0)
     xmin = max(0.0, Float64(minimum(potentials)) - 0.15 * Float64(std(potentials)))
     xmax = Float64(maximum(potentials)) + 0.15 * Float64(std(potentials))
@@ -191,17 +257,21 @@ function plot_potential_histogram(potentials, expected_u, dof, se_independent,
     hist!(ax, potentials; bins=36, normalization=:pdf,
           color=(:teal, 0.55), strokewidth=1,
           strokecolor=:white)
-    lines!(ax, xs, ys, color=:black, linewidth=4,
-           label=@sprintf("analytic Gamma(%.1f, 1) PDF", dof / 2))
-    vlines!(ax, [expected_u], color=:black, linestyle=:dash, linewidth=4,
-            label=@sprintf("analytic E[U] = %.2f", expected_u))
+    if ideal_reference
+        lines!(ax, xs, ys, color=:black, linewidth=4,
+               label=@sprintf("analytic Gamma(%.1f, 1) PDF", dof / 2))
+        vlines!(ax, [expected_u], color=:black, linestyle=:dash, linewidth=4,
+                label=@sprintf("analytic E[U] = %.2f", expected_u))
+    end
     vlines!(ax, [mean(potentials)], color=:tomato, linewidth=4,
             label=@sprintf("sample mean = %.2f", mean(potentials)))
     axislegend(ax, position=:rt)
-    text!(ax, 0.03, 0.94, space=:relative, align=(:left, :top),
-          text=@sprintf("analytic SE(mean) = %.3f\nobserved SE(mean) = %.3f",
-                        se_independent, se_observed),
-          fontsize=18)
+    if ideal_reference
+        text!(ax, 0.03, 0.94, space=:relative, align=(:left, :top),
+              text=@sprintf("analytic SE(mean) = %.3f\nobserved SE(mean) = %.3f",
+                            se_independent, se_observed),
+              fontsize=18)
+    end
     save(out_path, fig)
     return out_path
 end
@@ -224,14 +294,12 @@ function histogram_density(values, edges)
     return centers, density
 end
 
-function plot_score_norm2_histogram(score_norm2, analytic_norm2, expected_norm2,
-                                    out_path; bins::Int=60, analytic_bins::Int=240)
+function plot_score_norm2_histogram(score_norm2, xs, analytic_density,
+                                    expected_norm2, out_path; bins::Int=60,
+                                    ideal_reference::Bool=true)
     xmin = 0.0
-    xmax = max(quantile(Float64.(analytic_norm2), 0.995),
-               quantile(Float64.(score_norm2), 0.995))
+    xmax = ideal_reference ? maximum(xs) : maximum(Float64.(score_norm2)) * 1.05
     sim_edges = collect(range(xmin, xmax; length=bins + 1))
-    analytic_edges = collect(range(xmin, xmax; length=analytic_bins + 1))
-    centers, analytic_density = histogram_density(analytic_norm2, analytic_edges)
 
     fig = Figure(size=(950, 650), backgroundcolor=:white)
     ax = Axis(fig[1, 1],
@@ -241,10 +309,12 @@ function plot_score_norm2_histogram(score_norm2, analytic_norm2, expected_norm2,
     hist!(ax, score_norm2; bins=sim_edges, normalization=:pdf,
           color=(:steelblue, 0.55), strokewidth=1,
           strokecolor=:white, label="simulation")
-    lines!(ax, centers, analytic_density, color=:black, linewidth=4,
-           label="analytic weighted χ²")
-    vlines!(ax, [expected_norm2], color=:black, linestyle=:dash, linewidth=4,
-            label=@sprintf("analytic E[||score||²] = %.2f", expected_norm2))
+    if ideal_reference
+        lines!(ax, xs, analytic_density, color=:black, linewidth=4,
+               label="exact analytic PDF")
+        vlines!(ax, [expected_norm2], color=:black, linestyle=:dash, linewidth=4,
+                label=@sprintf("analytic E[||score||²] = %.2f", expected_norm2))
+    end
     vlines!(ax, [mean(score_norm2)], color=:tomato, linewidth=4,
             label=@sprintf("sample mean = %.2f", mean(score_norm2)))
     axislegend(ax, position=:rt)
@@ -252,14 +322,30 @@ function plot_score_norm2_histogram(score_norm2, analytic_norm2, expected_norm2,
     return out_path
 end
 
-function experiment_output_path(plot_cfg)
+function experiment_output_path_and_dir(plot_cfg)
     explicit = cfgget(plot_cfg, "data.path", nothing)
-    explicit !== nothing && return project_path(String(explicit))
+    if explicit !== nothing
+        data_path = project_path(String(explicit))
+        return data_path, dirname(data_path)
+    end
 
     exp_cfg_path = cfgget(plot_cfg, "experiment.config", nothing)
     exp_cfg_path === nothing && error("Plot config needs either data.path or experiment.config")
     exp_cfg = load_yaml_config(project_path(String(exp_cfg_path)))
-    return project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/rouse.jls")))
+    output_dir = cfgget(exp_cfg, "output.dir", nothing)
+    if output_dir !== nothing
+        legacy_output = cfgget(exp_cfg, "output.path", nothing)
+        default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
+        output_file = String(cfgget(exp_cfg, "output.file", default_file))
+        data_dir = project_path(config_output_dir(exp_cfg; default_name="rouse_raw"))
+        return joinpath(data_dir, output_file), data_dir
+    end
+    data_path = project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/rouse.jls")))
+    return data_path, dirname(data_path)
+end
+
+function plot_output_dir(plot_cfg, data_dir::AbstractString)
+    return joinpath(data_dir, "figures", config_hash(plot_cfg; exclude=("output",)))
 end
 
 function make_video_outputs(payload, out_dir, plot_cfg)
@@ -268,12 +354,12 @@ function make_video_outputs(payload, out_dir, plot_cfg)
     sim_cfg = payload["config"]
     tau_r = sim_cfg["tau_r"]
 
-    frame_dir = project_path(String(cfgget(plot_cfg, "output.frame_dir",
-                                           joinpath(out_dir, "frames"))))
-    gif_path = project_path(String(cfgget(plot_cfg, "output.gif_path",
-                                          joinpath(out_dir, "rouse_raw.gif"))))
-    mp4_path = project_path(String(cfgget(plot_cfg, "output.mp4_path",
-                                          joinpath(out_dir, "rouse_raw.mp4"))))
+    frame_dir = output_child_path(plot_cfg, out_dir, "output.frame_dir",
+                                  "output.frame_dirname", "frames")
+    gif_path = output_child_path(plot_cfg, out_dir, "output.gif_path",
+                                 "output.gif_file", "rouse_raw.gif")
+    mp4_path = output_child_path(plot_cfg, out_dir, "output.mp4_path",
+                                 "output.mp4_file", "rouse_raw.mp4")
     framerate = cfgint(plot_cfg, "video.framerate", 24)
 
     save_chain_frames(traj, times, tau_r, frame_dir)
@@ -299,7 +385,7 @@ function make_potential_output(payload, out_dir, plot_cfg)
     n_beads = sim_cfg["n_beads"]
     tau_r = sim_cfg["tau_r"]
 
-    potentials = [analytic_potential(traj[:, :, i], diffusion, k_over_xi)
+    potentials = [analytic_potential(traj[:, :, i], diffusion, k_over_xi, sim_cfg)
                   for i in axes(traj, 3)]
     dof = dim * (n_beads - 1)
     expected_u = Float32(dof) / 2.0f0
@@ -308,19 +394,21 @@ function make_potential_output(payload, out_dir, plot_cfg)
     se_independent = sqrt(analytic_var_u / Float32(n_samples))
     se_observed = std(potentials) / sqrt(Float32(n_samples))
 
-    histogram_path = project_path(String(cfgget(plot_cfg, "output.histogram_path",
-                                                joinpath(out_dir, "rouse_raw_potential_histogram.png"))))
+    ideal_reference = !nonideal_enabled(sim_cfg)
+    histogram_path = output_child_path(plot_cfg, out_dir, "output.histogram_path",
+                                       "output.histogram_file",
+                                       "rouse_raw_potential_histogram.png")
     plot_potential_histogram(potentials, expected_u, dof, se_independent,
-                             se_observed, histogram_path)
+                             se_observed, histogram_path; ideal_reference)
 
     println("Saved histogram:       $histogram_path")
     @printf "N beads: %d\n" n_beads
     @printf "tau_R: %.4f\n" tau_r
     @printf "analysis samples: %d through %.2f tau_R\n" n_samples (times[end] / tau_r)
-    @printf "analytic E[U]: %.4f\n" expected_u
+    ideal_reference && @printf "analytic E[U]: %.4f\n" expected_u
     @printf "sample mean U: %.4f\n" mean(potentials)
     @printf "sample std U: %.4f\n" std(potentials)
-    @printf "independent-sample SE(mean): %.4f\n" se_independent
+    ideal_reference && @printf "independent-sample SE(mean): %.4f\n" se_independent
     @printf "observed sample SE(mean): %.4f\n" se_observed
 end
 
@@ -334,26 +422,36 @@ function make_score_output(payload, out_dir, plot_cfg)
     n_beads = sim_cfg["n_beads"]
     tau_r = sim_cfg["tau_r"]
 
-    score_norm2 = [sum(abs2, analytic_score(traj[:, :, i], diffusion, k_over_xi))
+    score_norm2 = [sum(abs2, analytic_score(traj[:, :, i], diffusion, k_over_xi, sim_cfg))
                    for i in axes(traj, 3)]
-    lambdas = rouse_laplacian_eigenvalues(n_beads)
-    expected_norm2 = Float32(dim) * Float32(k_over_xi / diffusion) * sum(lambdas)
-    analytic_samples = cfgint(plot_cfg, "score.analytic_samples", 200000)
+    nonideal_enabled(sim_cfg) &&
+        @warn "Score histogram uses total analytic non-ideal score, but ideal continuous Rouse PDF overlay is disabled."
     bins = cfgint(plot_cfg, "score.bins", 60)
-    analytic_bins = cfgint(plot_cfg, "score.analytic_bins", 240)
-    analytic_norm2 = analytic_score_norm2_samples(
-        Xoshiro(123), dim, n_beads, diffusion, k_over_xi, analytic_samples)
+    ideal_reference = !nonideal_enabled(sim_cfg)
+    expected_norm2 = NaN32
+    xs = Float64[]
+    analytic_density = Float64[]
+    if ideal_reference
+        dim == 2 || error("Exact score-norm PDF is currently implemented for 2D Rouse chains.")
+        expected_norm2, var_norm2 = score_norm2_mean_var(dim, n_beads, diffusion, k_over_xi)
+        analytic_points = cfgint(plot_cfg, "score.analytic_points", 1200)
+        xmax = max(maximum(Float64.(score_norm2)) * 1.05,
+                   Float64(expected_norm2 + 4.0f0 * sqrt(var_norm2)))
+        xs = collect(range(0.0, xmax; length=analytic_points))
+        analytic_density = exact_score_norm2_pdf_2d(xs, n_beads, diffusion, k_over_xi)
+    end
 
-    score_path = project_path(String(cfgget(plot_cfg, "output.score_path",
-                                            joinpath(out_dir, "rouse_raw_score_norm2_histogram.png"))))
-    plot_score_norm2_histogram(score_norm2, analytic_norm2, expected_norm2,
-                               score_path; bins=bins, analytic_bins=analytic_bins)
+    score_path = output_child_path(plot_cfg, out_dir, "output.score_path",
+                                   "output.score_file",
+                                   "rouse_raw_score_norm2_histogram.png")
+    plot_score_norm2_histogram(score_norm2, xs, analytic_density, expected_norm2,
+                               score_path; bins=bins, ideal_reference)
 
     println("Saved score histogram: $score_path")
     @printf "N beads: %d\n" n_beads
     @printf "tau_R: %.4f\n" tau_r
     @printf "score samples: %d through %.2f tau_R\n" length(score_norm2) (times[end] / tau_r)
-    @printf "analytic E[||score||^2]: %.4f\n" expected_norm2
+    ideal_reference && @printf "analytic E[||score||^2]: %.4f\n" expected_norm2
     @printf "sample mean ||score||^2: %.4f\n" mean(score_norm2)
     @printf "sample std ||score||^2: %.4f\n" std(score_norm2)
 end
@@ -363,10 +461,10 @@ function main()
     plot_cfg_path = project_path(ARGS[1])
     plot_cfg = load_yaml_config(plot_cfg_path)
 
-    out_dir = project_path(String(cfgget(plot_cfg, "output.dir", "outputs/rouse_raw")))
+    data_path, data_dir = experiment_output_path_and_dir(plot_cfg)
+    out_dir = plot_output_dir(plot_cfg, data_dir)
     mkpath(out_dir)
 
-    data_path = experiment_output_path(plot_cfg)
     payload = deserialize(data_path)
     do_video = cfgbool(plot_cfg, "analysis.video", false)
     do_potential = cfgbool(plot_cfg, "analysis.potential", false)

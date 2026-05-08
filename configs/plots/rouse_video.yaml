@@ -10,7 +10,8 @@ video:
   framerate: 24
 
 output:
-  dir: outputs/rouse_raw
-  frame_dir: outputs/rouse_raw/frames
-  gif_path: outputs/rouse_raw/rouse_raw_first_5tau.gif
-  mp4_path: outputs/rouse_raw/rouse_raw_first_5tau.mp4
+  dir: outputs
+  experiment_name: rouse_raw
+  frame_dirname: frames
+  gif_file: rouse_raw_first_5tau.gif
+  mp4_file: rouse_raw_first_5tau.mp4

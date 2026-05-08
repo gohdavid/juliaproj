@@ -51,10 +51,8 @@ function _make_context(cfg, field, device)
 end
 
 function _output_dir(cfg)
-    base = String(cfgget(cfg, "output.dir", "runs"))
-    name = String(cfgget(cfg, "experiment.name",
-                         "nbody_" * Dates.format(now(), "yyyymmdd_HHMMSS")))
-    path = joinpath(base, name)
+    default_name = "nbody_" * Dates.format(now(), "yyyymmdd_HHMMSS")
+    path = config_output_dir(cfg; default_root="runs", default_name)
     mkpath(path)
     return path
 end

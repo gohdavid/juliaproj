@@ -7,5 +7,6 @@ analysis:
   score: false
 
 output:
-  dir: outputs/rouse_raw
-  histogram_path: outputs/rouse_raw/rouse_raw_potential_histogram.png
+  dir: outputs
+  experiment_name: rouse_raw
+  histogram_file: rouse_raw_potential_histogram.png

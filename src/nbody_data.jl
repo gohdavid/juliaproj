@@ -2,6 +2,7 @@ export NBodyDataConfig, generate_nbody_dataset, sample_training_batch
 export nri_spring_physics!, swirling_spring_physics!, lj_physics!
 export polymer_langevin_force!, run_polymer_langevin_simulation
 export run_polymer_langevin_sde_simulation, polymer_langevin_sde_problem
+export polymer_langevin_potential, polymer_langevin_score!, polymer_nonideal_params
 export pairwise_distances
 
 struct NBodyDataConfig
@@ -123,16 +124,187 @@ function init_polymer_chain(rng::AbstractRNG, dim::Int, n_atoms::Int, bond_std::
     return center_frame(x)
 end
 
-function polymer_langevin_force!(force, x, k_over_xi::Real)
+const POLYMER_NONIDEAL_OFFSET = 4
+
+function _polymer_nonideal_params(p)
+    return (
+        lj_enabled = length(p) >= 4 && p[4] > 0.5f0,
+        lj_epsilon = length(p) >= 5 ? p[5] : 0.0f0,
+        lj_sigma = length(p) >= 6 ? p[6] : 1.0f0,
+        lj_softening = length(p) >= 7 ? p[7] : 0.0f0,
+        lj_cutoff = length(p) >= 8 ? p[8] : 0.0f0,
+        lj_exclude_bonded = length(p) >= 9 ? p[9] > 0.5f0 : true,
+        lj_shift = length(p) >= 10 ? p[10] > 0.5f0 : true,
+        ev_enabled = length(p) >= 11 && p[11] > 0.5f0,
+        ev_epsilon = length(p) >= 12 ? p[12] : 0.0f0,
+        ev_sigma = length(p) >= 13 ? p[13] : 1.0f0,
+        ev_softening = length(p) >= 14 ? p[14] : 0.0f0,
+        ev_power = length(p) >= 15 ? p[15] : 12.0f0,
+        ev_cutoff = length(p) >= 16 ? p[16] : 0.0f0,
+        ev_exclude_bonded = length(p) >= 17 ? p[17] > 0.5f0 : true,
+        conf_enabled = length(p) >= 18 && p[18] > 0.5f0,
+        conf_strength = length(p) >= 19 ? p[19] : 0.0f0,
+        conf_centered = length(p) >= 20 ? p[20] > 0.5f0 : true,
+    )
+end
+
+polymer_nonideal_params(p) = _polymer_nonideal_params(Float32.(p))
+
+function _within_cutoff(r2, cutoff)
+    cutoff <= 0 && return true
+    return r2 <= cutoff * cutoff
+end
+
+function _skip_bonded(i::Int, j::Int, exclude_bonded::Bool)
+    return exclude_bonded && abs(i - j) == 1
+end
+
+function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
+                                 nonideal)
+    dim = size(x, 1)
     n_atoms = size(x, 2)
-    fill!(force, zero(eltype(force)))
+    fill!(score, zero(eltype(score)))
+    inv_d = 1.0f0 / Float32(diffusion)
+    k_score = Float32(k_over_xi) * inv_d
+
     @inbounds for i in 2:n_atoms
-        r = x[:, i] .- x[:, i - 1]
-        drift = Float32(k_over_xi) .* r
-        force[:, i] .-= drift
-        force[:, i - 1] .+= drift
+        for d in 1:dim
+            s = k_score * (x[d, i] - x[d, i - 1])
+            score[d, i] -= s
+            score[d, i - 1] += s
+        end
+    end
+
+    min_r2 = 1.0f-12
+    @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
+        dx1 = x[1, i] - x[1, j]
+        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0f0
+        raw_r2 = dx1 * dx1 + dx2 * dx2
+
+        coeff = 0.0f0
+        if nonideal.lj_enabled &&
+           !_skip_bonded(i, j, nonideal.lj_exclude_bonded) &&
+           _within_cutoff(raw_r2, nonideal.lj_cutoff)
+            r2 = max(raw_r2 + nonideal.lj_softening^2, min_r2)
+            inv_r2 = 1.0f0 / r2
+            sig2_over_r2 = (nonideal.lj_sigma * nonideal.lj_sigma) * inv_r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            coeff += 24.0f0 * nonideal.lj_epsilon * inv_r2 *
+                     (2.0f0 * sr12 - sr6)
+        end
+
+        if nonideal.ev_enabled &&
+           !_skip_bonded(i, j, nonideal.ev_exclude_bonded) &&
+           _within_cutoff(raw_r2, nonideal.ev_cutoff)
+            r2 = max(raw_r2 + nonideal.ev_softening^2, min_r2)
+            power = nonideal.ev_power
+            sigma_power = nonideal.ev_sigma^power
+            r_power_plus2 = r2^((power + 2.0f0) / 2.0f0)
+            coeff += nonideal.ev_epsilon * power * sigma_power / r_power_plus2
+        end
+
+        if coeff != 0.0f0
+            for d in 1:dim
+                dx = x[d, i] - x[d, j]
+                s = coeff * dx
+                score[d, i] += s
+                score[d, j] -= s
+            end
+        end
+    end
+
+    if nonideal.conf_enabled
+        strength = Float32(nonideal.conf_strength)
+        if nonideal.conf_centered
+            for d in 1:dim
+                cm = zero(eltype(x))
+                for i in 1:n_atoms
+                    cm += x[d, i]
+                end
+                cm /= n_atoms
+                for i in 1:n_atoms
+                    score[d, i] -= 2.0f0 * strength * (x[d, i] - cm)
+                end
+            end
+        else
+            for i in 1:n_atoms, d in 1:dim
+                score[d, i] -= 2.0f0 * strength * x[d, i]
+            end
+        end
     end
     return nothing
+end
+
+function polymer_langevin_force!(force, x, diffusion::Real, k_over_xi::Real, nonideal)
+    polymer_langevin_score!(force, x, diffusion, k_over_xi, nonideal)
+    force .*= Float32(diffusion)
+    return nothing
+end
+
+function polymer_langevin_force!(force, x, k_over_xi::Real)
+    nonideal = _polymer_nonideal_params(Float32[])
+    return polymer_langevin_force!(force, x, 1.0f0, k_over_xi, nonideal)
+end
+
+function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonideal)
+    dim = size(x, 1)
+    n_atoms = size(x, 2)
+    u = 0.0f0
+    coeff = Float32(k_over_xi) / (2.0f0 * Float32(diffusion))
+    @inbounds for i in 2:n_atoms, d in 1:dim
+        u += coeff * (x[d, i] - x[d, i - 1])^2
+    end
+
+    min_r2 = 1.0f-12
+    @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
+        dx1 = x[1, i] - x[1, j]
+        dx2 = dim >= 2 ? x[2, i] - x[2, j] : 0.0f0
+        raw_r2 = dx1 * dx1 + dx2 * dx2
+
+        if nonideal.lj_enabled &&
+           !_skip_bonded(i, j, nonideal.lj_exclude_bonded) &&
+           _within_cutoff(raw_r2, nonideal.lj_cutoff)
+            r2 = max(raw_r2 + nonideal.lj_softening^2, min_r2)
+            sig2_over_r2 = (nonideal.lj_sigma * nonideal.lj_sigma) / r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            val = 4.0f0 * nonideal.lj_epsilon * (sr12 - sr6)
+            if nonideal.lj_shift && nonideal.lj_cutoff > 0.0f0
+                src2 = (nonideal.lj_sigma / nonideal.lj_cutoff)^2
+                src6 = src2^3
+                val -= 4.0f0 * nonideal.lj_epsilon * (src6^2 - src6)
+            end
+            u += val
+        end
+
+        if nonideal.ev_enabled &&
+           !_skip_bonded(i, j, nonideal.ev_exclude_bonded) &&
+           _within_cutoff(raw_r2, nonideal.ev_cutoff)
+            r2 = max(raw_r2 + nonideal.ev_softening^2, min_r2)
+            r = sqrt(r2)
+            u += nonideal.ev_epsilon * (nonideal.ev_sigma / r)^nonideal.ev_power
+        end
+    end
+
+    if nonideal.conf_enabled
+        strength = Float32(nonideal.conf_strength)
+        if nonideal.conf_centered
+            for d in 1:dim
+                cm = zero(eltype(x))
+                for i in 1:n_atoms
+                    cm += x[d, i]
+                end
+                cm /= n_atoms
+                for i in 1:n_atoms
+                    u += strength * (x[d, i] - cm)^2
+                end
+            end
+        else
+            u += strength * sum(abs2, x)
+        end
+    end
+    return u
 end
 
 function run_polymer_langevin_simulation(rng::AbstractRNG, cfg::NBodyDataConfig)
@@ -141,6 +313,7 @@ function run_polymer_langevin_simulation(rng::AbstractRNG, cfg::NBodyDataConfig)
     diffusion = length(p) >= 1 ? p[1] : 1.0f0
     bond_length = length(p) >= 2 ? p[2] : 1.0f0
     k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
+    nonideal = _polymer_nonideal_params(p)
 
     x = init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length)
     force = similar(x)
@@ -148,7 +321,7 @@ function run_polymer_langevin_simulation(rng::AbstractRNG, cfg::NBodyDataConfig)
     noise_scale = sqrt(2.0f0 * diffusion * cfg.dt)
 
     for t in 1:cfg.total_steps
-        polymer_langevin_force!(force, x, k_over_xi)
+        polymer_langevin_force!(force, x, diffusion, k_over_xi, nonideal)
         x = x .+ cfg.dt .* force .+
             noise_scale .* randn(rng, Float32, cfg.dim, cfg.n_atoms)
         trajectory[:, :, t] = center_frame(x)
@@ -162,29 +335,26 @@ function polymer_langevin_sde_problem(rng::AbstractRNG, cfg::NBodyDataConfig)
     diffusion = length(p) >= 1 ? p[1] : 1.0f0
     bond_length = length(p) >= 2 ? p[2] : 1.0f0
     k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
+    nonideal = _polymer_nonideal_params(p)
 
     x0 = vec(init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length))
     drift = zeros(Float32, cfg.dim, cfg.n_atoms)
     function f!(du, u, params, t)
         x = reshape(u, cfg.dim, cfg.n_atoms)
         du_mat = reshape(du, cfg.dim, cfg.n_atoms)
-        polymer_langevin_force!(drift, x, k_over_xi)
+        polymer_langevin_force!(drift, x, diffusion, k_over_xi, nonideal)
         du_mat .= drift
         return nothing
     end
 
     sigma = sqrt(2.0f0 * diffusion)
     function g!(du, u, params, t)
-        fill!(du, 0.0f0)
-        @inbounds for i in axes(du, 1)
-            du[i, i] = sigma
-        end
+        fill!(du, sigma)
         return nothing
     end
 
-    tspan = (0.0f0, cfg.total_steps * cfg.dt)
-    return SDEProblem(f!, g!, x0, tspan, nothing;
-                      noise_rate_prototype=zeros(Float32, length(x0), length(x0)))
+    tspan = (0.0, Float64(cfg.total_steps) * Float64(cfg.dt))
+    return SDEProblem(f!, g!, x0, tspan, nothing)
 end
 
 function run_polymer_langevin_sde_simulation(rng::AbstractRNG, cfg::NBodyDataConfig;
