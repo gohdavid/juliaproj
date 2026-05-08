@@ -37,6 +37,8 @@ save:
   burn_in_tau: 20.0
   until_tau: 200.0
   interval_tau: 2.0
+  write_hdf5: true
+  write_jls: false
 
 output:
   dir: outputs

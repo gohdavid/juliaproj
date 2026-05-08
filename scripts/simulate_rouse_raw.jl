@@ -361,7 +361,13 @@ function main()
     burn_in_tau = BoltzFlow.cfgfloat(raw_cfg, "save.burn_in_tau", 0.0)
     until_tau = BoltzFlow.cfgfloat(raw_cfg, "save.until_tau", 5.0)
     interval_tau = BoltzFlow.cfgfloat(raw_cfg, "save.interval_tau", 0.05)
-    stream_hdf5 = BoltzFlow.cfgbool(raw_cfg, "save.stream_hdf5", true)
+    write_hdf5 = BoltzFlow.cfgbool(
+        raw_cfg, "save.write_hdf5",
+        BoltzFlow.cfgbool(raw_cfg, "save.stream_hdf5", true),
+    )
+    write_jls = BoltzFlow.cfgbool(raw_cfg, "save.write_jls", !write_hdf5)
+    (write_hdf5 || write_jls) ||
+        error("At least one of save.write_hdf5 or save.write_jls must be true")
     log_progress = BoltzFlow.cfgbool(raw_cfg, "logging.progress", true)
     progress_steps = BoltzFlow.cfgint(raw_cfg, "logging.progress_steps", 10_000)
     output_path, hdf5_path = output_paths(raw_cfg)
@@ -386,7 +392,7 @@ function main()
     prob = BoltzFlow.polymer_langevin_sde_problem(rng, sim_cfg)
     logger = TerminalLogger(stderr, ProgressLevel; always_flush=true)
     traj, times = with_logger(logger) do
-        if stream_hdf5
+        if write_hdf5
             solve_streaming_hdf5(prob, solver, dt64, save_times, save_tau, dim, n_beads,
                                  hdf5_path; progress=log_progress,
                                  progress_steps=progress_steps)
@@ -397,34 +403,35 @@ function main()
         end
     end
 
-    payload = Dict(
-        "config_path" => cfg_path,
-        "config" => Dict(
-            "seed" => seed,
-            "dim" => dim,
-            "n_beads" => n_beads,
-            "diffusion" => diffusion,
-            "bond_length" => bond_length,
-            "k_over_xi" => k_over_xi,
-            "solver_algorithm" => solver_algorithm,
-            "dt" => dt,
-            "tau_r" => tau_r,
-            "burn_in_tau" => burn_in_tau,
-            "until_tau" => until_tau,
-            "interval_tau" => interval_tau,
-            "hdf5_path" => stream_hdf5 ? hdf5_path : nothing,
-            "nonideal" => nonideal_config,
-        ),
-        "times" => times,
-        "times_tau" => save_tau,
-        "traj" => traj,
-    )
+    if write_jls
+        payload = Dict(
+            "config_path" => cfg_path,
+            "config" => Dict(
+                "seed" => seed,
+                "dim" => dim,
+                "n_beads" => n_beads,
+                "diffusion" => diffusion,
+                "bond_length" => bond_length,
+                "k_over_xi" => k_over_xi,
+                "solver_algorithm" => solver_algorithm,
+                "dt" => dt,
+                "tau_r" => tau_r,
+                "burn_in_tau" => burn_in_tau,
+                "until_tau" => until_tau,
+                "interval_tau" => interval_tau,
+                "hdf5_path" => write_hdf5 ? hdf5_path : nothing,
+                "nonideal" => nonideal_config,
+            ),
+            "times" => times,
+            "times_tau" => save_tau,
+            "traj" => traj,
+        )
 
-    mkpath(dirname(output_path))
-    serialize(output_path, payload)
-
-    println("Saved raw Rouse trajectory: $output_path")
-    stream_hdf5 && println("Saved HDF5 trajectory:     $hdf5_path")
+        mkpath(dirname(output_path))
+        serialize(output_path, payload)
+        println("Saved raw Rouse trajectory: $output_path")
+    end
+    write_hdf5 && println("Saved HDF5 trajectory:     $hdf5_path")
     @printf "config: %s\n" cfg_path
     @printf "solver: %s\n" solver_algorithm
     @printf "tau_R: %.4f\n" tau_r
