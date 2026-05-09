@@ -24,7 +24,7 @@ The slowest Rouse relaxation time is
 
 Usage:
 
-    julia --project=. scripts/simulate_rouse_raw.jl configs/rouse_video.yaml
+    julia --project=. scripts/simulate_rouse_raw.jl configs/experiments/rouse_base_video.yaml
     julia --project=. scripts/simulate_rouse_raw.jl configs/experiments/rouse_base.yaml
 """
 

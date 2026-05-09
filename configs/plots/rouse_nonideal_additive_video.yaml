@@ -1,0 +1,19 @@
+experiment:
+  config: configs/experiments/rouse_nonideal_additive_video.yaml
+
+data:
+  prefer_hdf5: true
+
+analysis:
+  video: true
+  potential: false
+  score: false
+
+video:
+  framerate: 60
+
+output:
+  dir: outputs
+  experiment_name: rouse_nonideal_additive_video
+  frame_dirname: frames
+  gif_file: rouse_nonideal_additive_video_first_5tau.gif

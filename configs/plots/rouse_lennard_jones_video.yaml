@@ -1,5 +1,5 @@
 experiment:
-  config: configs/experiments/rouse_video.yaml
+  config: configs/experiments/rouse_lennard_jones_video.yaml
 
 data:
   prefer_hdf5: true
@@ -14,6 +14,6 @@ video:
 
 output:
   dir: outputs
-  experiment_name: rouse_video
+  experiment_name: rouse_lennard_jones_video
   frame_dirname: frames
-  gif_file: rouse_video_first_5tau.gif
+  gif_file: rouse_lennard_jones_video_first_5tau.gif

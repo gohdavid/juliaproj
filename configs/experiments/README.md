@@ -3,7 +3,8 @@ Raw Rouse/polymer trajectory-generation configs for
 
 - `rouse_base.yaml`: long 16-worker baseline Rouse run used by polymer model
   configs.
-- `rouse_video.yaml`: short trajectory for visual checks.
+- `rouse_base_video.yaml`: short baseline trajectory for visual checks.
+- `rouse_*_video.yaml`: short trajectory variants for visual checks.
 - `rouse_*nonideal*.yaml`, `rouse_confinement.yaml`,
   `rouse_excluded_volume.yaml`, `rouse_lennard_jones.yaml`: variants with
   nonideal-force terms enabled or staged.

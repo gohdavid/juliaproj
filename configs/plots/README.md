@@ -1,6 +1,8 @@
 Plot/analysis configs consumed by `scripts/rouse_score_analytics.jl`.
 
-- `rouse_video.yaml`: make trajectory animation frames/GIF.
+- `rouse_base_video.yaml`: make baseline trajectory animation frames/GIF.
+- `rouse_*_video.yaml`: make trajectory animation frames/GIF for matching
+  experiment variants.
 - `rouse_potential.yaml`: make analytic potential diagnostics.
 - `rouse_score.yaml`: make analytic score-norm diagnostics.
 

@@ -56,7 +56,7 @@ from the raw video coordinates.
 
 Usage:
 
-    julia --project=. scripts/rouse_score_analytics.jl configs/plots/rouse_video.yaml
+    julia --project=. scripts/rouse_score_analytics.jl configs/plots/rouse_base_video.yaml
     julia --project=. scripts/rouse_score_analytics.jl configs/plots/rouse_potential.yaml
     julia --project=. scripts/rouse_score_analytics.jl configs/plots/rouse_score.yaml
 """

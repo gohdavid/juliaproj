@@ -1,10 +1,4 @@
-seed: 24
-
-parallel:
-  workers: 16
-  seed_stride: 1
-  julia_num_threads: 1
-  log_dir: logs/rouse_nonideal_additive
+seed: 11
 
 rouse:
   dim: 2
@@ -15,39 +9,39 @@ rouse:
 
 nonideal:
   lennard_jones:
-    enabled: true
-    epsilon: 0.08
+    enabled: false
+    epsilon: 0.05
     sigma: 1.0
-    softening: 0.3
+    softening: 0.4
     cutoff: 2.5
     exclude_bonded: true
     shift: true
   excluded_volume:
-    enabled: true
-    epsilon: 0.03
+    enabled: false
+    epsilon: 0.02
     sigma: 1.0
-    softening: 0.3
+    softening: 0.4
     power: 12.0
     cutoff: 2.5
     exclude_bonded: true
   confinement:
-    enabled: true
-    strength: 0.01
-    centered: true
+    enabled: false
+    strength: 0.001
+    centered: false
 
 solver:
-  algorithm: EM
-  dt: 0.00025
+  algorithm: SOSRA
+  dt: 0.001
 
 save:
-  burn_in_tau: 20.0
-  until_tau: 2498.0
-  interval_tau: 2.0
+  burn_in_tau: 0.0
+  until_tau: 5.0
+  interval_tau: 0.01
   write_hdf5: true
   write_jls: false
 
 output:
   dir: outputs
-  experiment_name: rouse_nonideal_additive
+  experiment_name: rouse_base_video
   file: traj.jls
   hdf5_file: trajectories/traj.h5

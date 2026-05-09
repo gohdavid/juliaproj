@@ -1,0 +1,20 @@
+experiment:
+  config: configs/experiments/rouse_lennard_jones.yaml
+
+data:
+  prefer_hdf5: true
+
+analysis:
+  video: false
+  potential: true
+  score: true
+
+score:
+  bins: 120
+  analytic_points: 1200
+
+output:
+  dir: outputs
+  experiment_name: rouse_lennard_jones
+  histogram_file: rouse_lennard_jones_potential_histogram.png
+  score_file: rouse_lennard_jones_score_norm2_histogram.png

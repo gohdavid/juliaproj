@@ -1,0 +1,20 @@
+experiment:
+  config: configs/experiments/rouse_excluded_volume.yaml
+
+data:
+  prefer_hdf5: true
+
+analysis:
+  video: false
+  potential: true
+  score: true
+
+score:
+  bins: 120
+  analytic_points: 1200
+
+output:
+  dir: outputs
+  experiment_name: rouse_excluded_volume
+  histogram_file: rouse_excluded_volume_potential_histogram.png
+  score_file: rouse_excluded_volume_score_norm2_histogram.png

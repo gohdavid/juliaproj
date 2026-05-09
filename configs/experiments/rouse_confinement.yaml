@@ -32,12 +32,12 @@ nonideal:
     exclude_bonded: true
   confinement:
     enabled: true
-    strength: 0.001
-    centered: false
+    strength: 0.02
+    centered: true
 
 solver:
   algorithm: EM
-  dt: 0.001
+  dt: 0.0005
 
 save:
   burn_in_tau: 20.0

@@ -172,7 +172,7 @@ function _equivariant_diffusion_prediction(x, t, params;
         node_input = vcat(reshape(h, n_atoms, n_atoms * batch_size),
                           reshape(m_i, dim, n_atoms * batch_size))
         h_flat = _diffusion_node_state(node_input, params, model)
-        h = reshape(h_flat, n_atoms, n_atoms, batch_size)
+        h = h .+ reshape(h_flat, n_atoms, n_atoms, batch_size)
     end
 
     return center_positions(x_l .- x)
