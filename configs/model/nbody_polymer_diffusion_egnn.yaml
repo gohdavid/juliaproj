@@ -12,7 +12,7 @@ data:
   n_atoms: 32
   n_samples: 4000
   burn_in: 0
-  source_dir: outputs/rouse_base/06e62489765b/trajectories
+  source_dir: outputs/rouse_base/400cf3f38543/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
   physics_params: [1.0, 1.0, 3.0]
@@ -25,11 +25,11 @@ model:
   hidden_dims: [64, 64, 64]
 
 training:
-  epochs: 30
+  epochs: 100
   batch_size: 64
-  learning_rate: 1.0e-3
+  learning_rate: 5e-3
   log_every: 1
-  checkpoint_every: 5
+  checkpoint_every: 10
 
 sampling:
   n_samples: 1000

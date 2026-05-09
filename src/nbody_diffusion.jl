@@ -52,9 +52,9 @@ function init_diffusion_params(rng::AbstractRNG, model::EquivariantDiffusionMode
     edge_params, _ = DiffEqFlux.Lux.setup(rng, model.edge_net)
     node_params, _ = DiffEqFlux.Lux.setup(rng, model.node_net)
     node_embed = 0.1f0 .* randn(rng, Float32, model.node_embedding_dim, model.n_atoms)
-    return ComponentArray((edge=edge_params,
-                           node=node_params,
-                           node_embed=node_embed)) |> device
+    return (edge=edge_params,
+            node=node_params,
+            node_embed=node_embed) |> device
 end
 
 const _HALF_PI_F32 = Float32(pi / 2)
@@ -113,7 +113,7 @@ function _diffusion_node_state(input, params, model::EquivariantDiffusionModel)
     return val
 end
 
-function _diffusion_node_pair_features(h)
+function _diffusion_node_pair_features_primal(h)
     feature_dim, n_atoms, batch_size = size(h)
     h_i = repeat(reshape(h, feature_dim, n_atoms, 1, batch_size),
                  inner=(1, 1, n_atoms, 1))
@@ -121,6 +121,76 @@ function _diffusion_node_pair_features(h)
                  inner=(1, n_atoms, 1, 1))
     return reshape(h_i, feature_dim, n_atoms * n_atoms * batch_size),
            reshape(h_j, feature_dim, n_atoms * n_atoms * batch_size)
+end
+
+function _diffusion_node_pair_features(h)
+    return _diffusion_node_pair_features_primal(h)
+end
+
+function _diffusion_vcat_rows(parts...)
+    return vcat(parts...)
+end
+
+Zygote.@adjoint function _diffusion_vcat_rows(parts...)
+    y = vcat(parts...)
+    function pullback(Δ)
+        Δ === nothing && return ntuple(_ -> nothing, length(parts))
+        Δ = Zygote.unthunk(Δ)
+
+        row_start = 1
+        grads = map(parts) do part
+            row_stop = row_start + size(part, 1) - 1
+            grad = Δ[row_start:row_stop, :]
+            row_start = row_stop + 1
+            grad
+        end
+        return grads
+    end
+    return y, pullback
+end
+
+function _diffusion_batch_node_embed(node_embed, batch_size::Int)
+    feature_dim, n_atoms = size(node_embed)
+    return repeat(reshape(node_embed, feature_dim, n_atoms, 1),
+                  outer=(1, 1, batch_size))
+end
+
+Zygote.@adjoint function _diffusion_batch_node_embed(node_embed, batch_size::Int)
+    y = _diffusion_batch_node_embed(node_embed, batch_size)
+    function pullback(Δ)
+        Δ === nothing && return (nothing, nothing)
+        Δ = Zygote.unthunk(Δ)
+        feature_dim, n_atoms = size(node_embed)
+        grad = sum(reshape(Δ, feature_dim, n_atoms, batch_size); dims=3)
+        return (reshape(grad, feature_dim, n_atoms), nothing)
+    end
+    return y, pullback
+end
+
+Zygote.@adjoint function _diffusion_node_pair_features(h)
+    y = _diffusion_node_pair_features_primal(h)
+    function pullback(Δ)
+        Δ_i, Δ_j = Δ
+        feature_dim, n_atoms, batch_size = size(h)
+        dh = zero(h)
+
+        if Δ_i !== nothing
+            Δ_i = Zygote.unthunk(Δ_i)
+            dh_i = sum(reshape(Δ_i, feature_dim, n_atoms, n_atoms, batch_size);
+                       dims=3)
+            dh = dh .+ reshape(dh_i, feature_dim, n_atoms, batch_size)
+        end
+
+        if Δ_j !== nothing
+            Δ_j = Zygote.unthunk(Δ_j)
+            dh_j = sum(reshape(Δ_j, feature_dim, n_atoms, n_atoms, batch_size);
+                       dims=2)
+            dh = dh .+ reshape(dh_j, feature_dim, n_atoms, batch_size)
+        end
+
+        return (dh,)
+    end
+    return y, pullback
 end
 
 function center_of_mass(x)
@@ -131,15 +201,25 @@ function center_positions(x)
     return x .- center_of_mass(x)
 end
 
+Zygote.@adjoint function center_positions(x)
+    y = x .- center_of_mass(x)
+    function pullback(Δ)
+        Δ === nothing && return (nothing,)
+        return (center_positions(Zygote.unthunk(Δ)),)
+    end
+    return y, pullback
+end
+
 function _equivariant_diffusion_prediction(x, t, params;
                                            model::EquivariantDiffusionModel,
                                            seq_dist_flat, mask)
     dim, n_atoms, batch_size = size(x)
     x_l = x
-    h = repeat(reshape(params.node_embed, model.node_embedding_dim, n_atoms, 1),
-               outer=(1, 1, batch_size))
+    h = _diffusion_batch_node_embed(params.node_embed, batch_size)
     mask_const = Zygote.dropgrad(mask)
-    t_flat = repeat(reshape(t, 1, batch_size), inner=(1, n_atoms * n_atoms))
+    t_flat = Zygote.ignore() do
+        repeat(reshape(t, 1, batch_size), inner=(1, n_atoms * n_atoms))
+    end
 
     for _ in 1:model.n_layers
         x_i = reshape(x_l, dim, n_atoms, 1, batch_size)
@@ -148,7 +228,8 @@ function _equivariant_diffusion_prediction(x, t, params;
         d_ij = sum(abs2, r_ij; dims=1)
         d_ij_flat = reshape(d_ij, 1, n_atoms * n_atoms * batch_size)
         h_i_flat, h_j_flat = _diffusion_node_pair_features(h)
-        edge_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
+        edge_input = _diffusion_vcat_rows(
+            h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
 
         m_flat = _diffusion_edge_message(edge_input, params, model)
         scalar_ij = reshape(m_flat, 1, n_atoms, n_atoms, batch_size)
@@ -157,8 +238,9 @@ function _equivariant_diffusion_prediction(x, t, params;
         x_l = x_l .+ reshape(dx, dim, n_atoms, batch_size)
 
         m_i = sum(scalar_ij .* mask_const; dims=3)
-        node_input = vcat(reshape(h, model.node_embedding_dim, n_atoms * batch_size),
-                          reshape(m_i, 1, n_atoms * batch_size))
+        node_input = _diffusion_vcat_rows(
+            reshape(h, model.node_embedding_dim, n_atoms * batch_size),
+            reshape(m_i, 1, n_atoms * batch_size))
         h_flat = _diffusion_node_state(node_input, params, model)
         h = h .+ reshape(h_flat, model.node_embedding_dim, n_atoms, batch_size)
     end
@@ -199,7 +281,9 @@ function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
     x0 = center_positions(x_batch) |> ctx.device
     t = (_T_MIN_F32 .+ (1.0f0 - _T_MIN_F32) .*
          rand(rng, Float32, 1, 1, batch_size)) |> ctx.device
-    xt, eps = forward_noise(x0, t; rng, device=ctx.device)
+    xt, eps = Zygote.ignore() do
+        forward_noise(x0, t; rng, device=ctx.device)
+    end
 
     seq_dist_flat, mask = Zygote.ignore() do
         _diffusion_fixed_inputs(model, batch_size, ctx.device)
@@ -207,7 +291,10 @@ function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
     score = _equivariant_diffusion_prediction(
         xt, t, params; model, seq_dist_flat, mask)
     score = center_positions(score)
-    return mean(abs2, @. beta(t) * score + Zygote.dropgrad(eps))
+    noise_scale = Zygote.ignore() do
+        beta(t)
+    end
+    return mean(abs2, noise_scale .* score .+ eps)
 end
 
 function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;

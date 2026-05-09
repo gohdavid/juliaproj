@@ -1,6 +1,6 @@
 using Serialization
 
-export ExperimentResult, run_nbody_experiment, run_experiment
+export ExperimentResult, run_nbody_cnf_experiment, run_nbody_diffusion_experiment, run_experiment
 
 struct ExperimentResult
     config::Dict{String,Any}
@@ -12,12 +12,32 @@ struct ExperimentResult
     metrics::Dict{String,Float32}
 end
 
+_cpu_device() = DiffEqFlux.Lux.cpu_device()
+
+function _gpu_initialization_error_message(err)
+    return sprint(showerror, err)
+end
+
 function _device_from_config(cfg)
     use_gpu = cfgbool(cfg, "runtime.use_gpu", false)
-    if use_gpu && CUDA.functional()
-        return CUDA.cu
+    use_gpu || return _cpu_device()
+
+    if !CUDA.functional()
+        @warn "runtime.use_gpu=true but CUDA is not functional; falling back to CPU"
+        return _cpu_device()
     end
-    return DiffEqFlux.Lux.cpu_device()
+
+    strict_gpu = cfgbool(cfg, "runtime.strict_gpu", false)
+    try
+        CUDA.zeros(Float32, 1)
+        return CUDA.cu
+    catch err
+        if strict_gpu
+            rethrow()
+        end
+        @warn "CUDA initialization failed; falling back to CPU" error=_gpu_initialization_error_message(err)
+        return _cpu_device()
+    end
 end
 
 function _data_config(cfg)
@@ -163,6 +183,61 @@ function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params
     return Float32(sqerr / n_values)
 end
 
+function _gradlogp_force_cosine_stats(pred, target)
+    batch_size = size(target, 3)
+    cosine_sum = 0.0
+    n_valid = 0
+    for i in 1:batch_size
+        pred_i = @view(pred[:, :, i])
+        target_i = @view(target[:, :, i])
+        pred_norm2 = sum(abs2, pred_i)
+        target_norm2 = sum(abs2, target_i)
+        if pred_norm2 > 0.0 && target_norm2 > 0.0
+            cosine_sum += sum(pred_i .* target_i) / sqrt(pred_norm2 * target_norm2)
+            n_valid += 1
+        end
+    end
+    return cosine_sum, n_valid
+end
+
+function _cnf_gradlogp_force_cosine_metric(ctx::NBodyCNFContext, params, train_data,
+                                           force_targets; batch_size::Int=64,
+                                           rng::AbstractRNG=Random.default_rng())
+    n_samples = size(train_data, 3)
+    cosine_sum = 0.0
+    n_valid = 0
+    for batch_start in 1:batch_size:n_samples
+        batch_stop = min(batch_start + batch_size - 1, n_samples)
+        batch_idx = batch_start:batch_stop
+        pred = DiffEqFlux.Lux.cpu_device()(
+            cnf_logp_gradient(ctx, params, train_data[:, :, batch_idx]; rng))
+        target = @view(force_targets[:, :, batch_idx])
+        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
+        cosine_sum += batch_cosine_sum
+        n_valid += batch_valid
+    end
+    return n_valid == 0 ? Float32(NaN) : Float32(cosine_sum / n_valid)
+end
+
+function _diffusion_gradlogp_force_cosine_metric(ctx::NBodyDiffusionContext, params,
+                                                 train_data, force_targets;
+                                                 batch_size::Int=64)
+    n_samples = size(train_data, 3)
+    cosine_sum = 0.0
+    n_valid = 0
+    for batch_start in 1:batch_size:n_samples
+        batch_stop = min(batch_start + batch_size - 1, n_samples)
+        batch_idx = batch_start:batch_stop
+        pred = DiffEqFlux.Lux.cpu_device()(
+            diffusion_logp_gradient(ctx, params, train_data[:, :, batch_idx]))
+        target = @view(force_targets[:, :, batch_idx])
+        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
+        cosine_sum += batch_cosine_sum
+        n_valid += batch_valid
+    end
+    return n_valid == 0 ? Float32(NaN) : Float32(cosine_sum / n_valid)
+end
+
 function _save_result(result::ExperimentResult)
     path = joinpath(result.output_dir, "result.jls")
     serialize(path, Dict(
@@ -234,17 +309,27 @@ function _maybe_plot_result(result::DiffusionResult)
     train_data = result.train_data
     samples = DiffEqFlux.Lux.cpu_device()(result.samples)
     path = joinpath(result.output_dir, "samples_vs_train.png")
-    plt = scatter(train_data[1, :, :], train_data[2, :, :];
+    plt = scatter(samples[1, :, :], samples[2, :, :];
                   title="Diffusion samples vs training data",
                   xlabel="x", ylabel="y", markersize=2,
                   markercolor=:blue, legend=false, aspect_ratio=:equal)
-    scatter!(plt, samples[1, :, :], samples[2, :, :];
+    scatter!(plt, train_data[1, :, :], train_data[2, :, :];
              markersize=2, markercolor=:tomato, legend=false)
     savefig(plt, path)
     return path
 end
 
-function run_nbody_experiment(cfg::Dict{String,Any}; config_path=nothing)
+
+function center_of_mass(x)
+    return mean(x; dims=2)
+end
+
+function center_positions(x)
+    return x .- center_of_mass(x)
+end
+
+
+function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
@@ -289,6 +374,11 @@ function run_nbody_experiment(cfg::Dict{String,Any}; config_path=nothing)
             batch_size=cfgint(cfg, "training.batch_size", 64),
             rng,
         )
+        metrics["gradlogp_force_cosine"] = _cnf_gradlogp_force_cosine_metric(
+            ctx, params, train_data, force_targets;
+            batch_size=cfgint(cfg, "training.batch_size", 64),
+            rng,
+        )
     end
 
     result = ExperimentResult(cfg, train_data, params, losses, samples,
@@ -296,54 +386,6 @@ function run_nbody_experiment(cfg::Dict{String,Any}; config_path=nothing)
     result_path = _save_result(result)
     plot_path = _maybe_plot_result(result)
     @info "experiment complete" output_dir=result.output_dir result_path plot_path metrics
-    return result
-end
-
-function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=nothing)
-    seed = cfgint(cfg, "experiment.seed", 0)
-    rng = Xoshiro(seed)
-    device = _device_from_config(cfg)
-    output_dir = _output_dir(cfg; config_path)
-
-    data_cfg = _data_config(cfg)
-    train_data = generate_nbody_dataset(rng, data_cfg)
-    if cfgbool(cfg, "data.center", true)
-        train_data = center_positions(train_data)
-    end
-
-    field = build_fm_vector_field(
-        dim=data_cfg.dim,
-        n_atoms=data_cfg.n_atoms,
-        hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
-    )
-    ctx = NBodyFlowMatchingContext(
-        field,
-        device,
-        cfgint(cfg, "sampling.steps", 64),
-    )
-    params = init_fm_params(rng, field; device)
-
-    params, _, losses = train_flow_matching_adam(
-        ctx, params, train_data;
-        epochs=cfgint(cfg, "training.epochs", 10),
-        batch_size=cfgint(cfg, "training.batch_size", 64),
-        learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
-        log_every=cfgint(cfg, "training.log_every", 1),
-        checkpoint_callback=_checkpoint_callback(cfg, output_dir),
-        rng,
-    )
-
-    samples = generate_flow_matching_samples(
-        ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng)
-    metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
-        "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
-    ))
-
-    result = FlowMatchingResult(cfg, train_data, params, losses, samples,
-                                output_dir, metrics)
-    result_path = _save_result(result)
-    plot_path = _maybe_plot_result(result)
-    @info "flow matching experiment complete" output_dir=result.output_dir result_path plot_path metrics
     return result
 end
 
@@ -391,6 +433,10 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
             ctx, params, train_data, force_targets;
             batch_size=cfgint(cfg, "training.batch_size", 64),
         )
+        metrics["gradlogp_force_cosine"] = _diffusion_gradlogp_force_cosine_metric(
+            ctx, params, train_data, force_targets;
+            batch_size=cfgint(cfg, "training.batch_size", 64),
+        )
     end
 
     result = DiffusionResult(cfg, train_data, params, losses, samples,
@@ -409,9 +455,7 @@ end
 function run_experiment(cfg::Dict{String,Any}; config_path=nothing)
     family = cfgsymbol(cfg, "experiment.family", "nbody_cnf")
     if family == :nbody_cnf
-        return run_nbody_experiment(cfg; config_path)
-    elseif family in (:nbody_flow_matching, :nbody_fm, :nbody_equivariant_fm)
-        return run_nbody_flow_matching_experiment(cfg; config_path)
+        return run_nbody_cnf_experiment(cfg; config_path)
     elseif family in (:nbody_diffusion, :nbody_equivariant_diffusion)
         return run_nbody_diffusion_experiment(cfg; config_path)
     end
