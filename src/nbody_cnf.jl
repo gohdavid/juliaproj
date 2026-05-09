@@ -1,5 +1,6 @@
 export MLPVectorField, EGNNVectorField, NBodyCNFContext
-export build_vector_field, init_cnf_params, cnf_nll, train_cnf_adam, generate_cnf_samples
+export build_vector_field, init_cnf_params, cnf_logp, cnf_logp_gradient
+export cnf_nll, train_cnf_adam, generate_cnf_samples
 export log_standard_normal
 
 abstract type AbstractNBodyVectorField end
@@ -46,9 +47,9 @@ function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10, hidden_di
         return MLPVectorField(dim, n_atoms, hidden,
                               _dense_chain(input_dim, output_dim, hidden))
     elseif kind == :egnn
-        input_dim = 2 * n_atoms + 2
+        input_dim = 2 * n_atoms + 3
         return EGNNVectorField(dim, n_atoms, hidden,
-                               _dense_chain(input_dim, 1, hidden))
+                               _dense_chain(input_dim, dim, hidden))
     else
         error("Unknown vector field kind: $kind")
     end
@@ -135,19 +136,27 @@ end
 
 function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     n_atoms = field.n_atoms
+
     h_fixed = Matrix{Float32}(I, n_atoms, n_atoms)
     h_i_flat = repeat(h_fixed, outer=(1, n_atoms * batch_size)) |> device
     h_j_flat = repeat(h_fixed, inner=(1, n_atoms), outer=(1, batch_size)) |> device
+
+    seq_dist_fixed = Float32[i - j for i in 1:n_atoms, j in 1:n_atoms]
+    seq_dist_fixed = reshape(seq_dist_fixed, 1, n_atoms * n_atoms)
+    seq_dist_flat = repeat(seq_dist_fixed, outer=(1, batch_size)) |> device
+
     mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
                    1, n_atoms, n_atoms, 1) |> device
-    jvp_probe = vcat(zeros(Float32, 2 * n_atoms, 1),
+
+    jvp_probe = vcat(zeros(Float32, 2*n_atoms+1, 1),
                      ones(Float32, 1, 1),
                      zeros(Float32, 1, 1)) |> device
-    return h_i_flat, h_j_flat, mask, jvp_probe
+
+    return h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe
 end
 
 function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
-                              h_i_flat, h_j_flat, mask, jvp_probe)
+                              h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
     x = u.x
     dim, n_atoms, batch_size = size(x)
     x_i = reshape(x, dim, n_atoms, 1, batch_size)
@@ -156,20 +165,22 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     d_ij = sum(abs2, r_ij; dims=1)
     d_ij_flat = reshape(d_ij, 1, n_atoms * n_atoms * batch_size)
     t_flat = d_ij_flat .* zero(eltype(x)) .+ eltype(x)(t)
-    net_input = vcat(h_i_flat, h_j_flat, d_ij_flat, t_flat)
 
+    net_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
     m_flat, dm_flat = forward_mlp_generic_jvp(net_input, params, jvp_probe)
-    m_ij = reshape(m_flat, 1, n_atoms, n_atoms, batch_size)
-    dm_ij = reshape(dm_flat, 1, n_atoms, n_atoms, batch_size)
+    m_ij = reshape(m_flat, dim, n_atoms, n_atoms, batch_size)
+    dm_ij = reshape(dm_flat, dim, n_atoms, n_atoms, batch_size)
 
     denom = d_ij .+ one(eltype(x))
     w_ij = (m_ij ./ denom) .* mask
     dw_ij = ((dm_ij .* denom .- m_ij) ./ denom .^ 2) .* mask
 
-    dx = reshape(sum(r_ij .* w_ij; dims=3) ./ Float32(n_atoms),
-                 dim, n_atoms, batch_size)
-    trace_terms = Float32(dim) .* w_ij .+ 2.0f0 .* dw_ij .* d_ij
-    trace_sum = sum(trace_terms; dims=(2, 3)) ./ Float32(n_atoms)
+    dx_terms = w_ij .* r_ij
+    dx = sum(dx_terms; dims=3) ./ Float32(n_atoms)
+    dx = reshape(dx, dim, n_atoms, batch_size)
+
+    trace_terms = w_ij .+ 2.0f0 .* r_ij.^2 .* dw_ij
+    trace_sum = sum(trace_terms, dims=(1, 2, 3)) ./ Float32(n_atoms)
     dlogp = -reshape(trace_sum, 1, batch_size)
     return ComponentArray(x=dx, logp=dlogp)
 end
@@ -188,10 +199,11 @@ function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng)
                 u, p, t; field, probe_in, probe_out)
         end
     elseif field isa EGNNVectorField
-        h_i_flat, h_j_flat, mask, jvp_probe =
+        h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
             _egnn_fixed_inputs(field, batch_size, ctx.device)
+        end
         ode_func = (u, p, t) -> _egnn_exact_dynamics(
-            u, p, t; field, h_i_flat, h_j_flat, mask, jvp_probe)
+            u, p, t; field, h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
     else
         error("Unsupported vector field $(typeof(field))")
     end
@@ -202,17 +214,42 @@ function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng)
     return ODEProblem(ode_func, u0, tspan, params)
 end
 
-function cnf_nll(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng())
-    batch_size = size(x_batch, 3)
-    x_dev = x_batch |> ctx.device
+function _cnf_logp_device(ctx::NBodyCNFContext, params, x_dev; rng)
+    batch_size = size(x_dev, 3)
     u0 = ComponentArray(x=x_dev, logp=zeros(Float32, 1, batch_size) |> ctx.device)
     prob = _cnf_problem(ctx, params, batch_size, ctx.tspan; rng)
     sol = solve(remake(prob; u0, p=params), ctx.solver;
                 abstol=ctx.abstol, reltol=ctx.reltol, verbose=false)
     x_noise = sol.u[end].x
     delta_logp = sol.u[end].logp
-    log_pdata = log_standard_normal(x_noise) .- delta_logp
+    return log_standard_normal(x_noise) .- delta_logp
+end
+
+function cnf_logp(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng())
+    x_dev = x_batch |> ctx.device
+    return _cnf_logp_device(ctx, params, x_dev; rng)
+end
+
+function cnf_nll(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng())
+    batch_size = size(x_batch, 3)
+    log_pdata = cnf_logp(ctx, params, x_batch; rng)
     return sum(-log_pdata) / batch_size
+end
+
+"""
+    cnf_logp_gradient(ctx, params, x_batch; rng=Random.default_rng())
+
+Return `grad_x logP(x)` for every sample in `x_batch` under the trained CNF
+parameters. The output has the same `(dim, n_atoms, batch)` layout as
+`x_batch`. When `ctx.trace_mode != :exact`, the gradient is taken through the
+same Hutchinson trace estimate used by the likelihood calculation.
+"""
+function cnf_logp_gradient(ctx::NBodyCNFContext, params, x_batch;
+                           rng=Random.default_rng())
+    x_dev = x_batch |> ctx.device
+    grad = Zygote.gradient(x -> sum(_cnf_logp_device(ctx, params, x; rng)), x_dev)[1]
+    grad === nothing && error("Zygote returned no coordinate gradient.")
+    return grad
 end
 
 function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;

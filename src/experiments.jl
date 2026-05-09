@@ -9,6 +9,7 @@ struct ExperimentResult
     losses::Vector{Float32}
     samples
     output_dir::String
+    metrics::Dict{String,Float32}
 end
 
 function _device_from_config(cfg)
@@ -86,10 +87,45 @@ function _polymer_langevin_score_targets(train_data, data_cfg::NBodyDataConfig)
     return targets
 end
 
+function _polymer_langevin_force_targets(train_data, data_cfg::NBodyDataConfig)
+    data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ||
+        error("CNF force evaluation currently requires polymer_langevin or rouse_hdf5 data")
+    p = data_cfg.physics_params
+    diffusion = length(p) >= 1 ? p[1] : 1.0f0
+    bond_length = length(p) >= 2 ? p[2] : 1.0f0
+    k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
+    nonideal = polymer_nonideal_params(p)
+
+    targets = similar(train_data)
+    for i in axes(train_data, 3)
+        polymer_langevin_force!(@view(targets[:, :, i]), @view(train_data[:, :, i]),
+                                diffusion, k_over_xi, nonideal)
+    end
+    return targets
+end
+
 function _score_mse_metric(ctx::NBodyDiffusionContext, params, train_data, score_targets)
     pred = DiffEqFlux.Lux.cpu_device()(predict_diffusion_score(ctx, params, train_data))
     target = DiffEqFlux.Lux.cpu_device()(score_targets)
     return Float32(mean(abs2, pred .- target))
+end
+
+function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
+                                        force_targets; batch_size::Int=64,
+                                        rng::AbstractRNG=Random.default_rng())
+    n_samples = size(train_data, 3)
+    sqerr = 0.0
+    n_values = 0
+    for batch_start in 1:batch_size:n_samples
+        batch_stop = min(batch_start + batch_size - 1, n_samples)
+        batch_idx = batch_start:batch_stop
+        pred = DiffEqFlux.Lux.cpu_device()(
+            cnf_logp_gradient(ctx, params, train_data[:, :, batch_idx]; rng))
+        target = @view(force_targets[:, :, batch_idx])
+        sqerr += sum(abs2, pred .- target)
+        n_values += length(target)
+    end
+    return Float32(sqerr / n_values)
 end
 
 function _save_result(result::ExperimentResult)
@@ -99,7 +135,7 @@ function _save_result(result::ExperimentResult)
         "params" => DiffEqFlux.Lux.cpu_device()(result.params),
         "losses" => result.losses,
         "samples" => DiffEqFlux.Lux.cpu_device()(result.samples),
-        "metrics" => _sample_metrics(result.train_data, result.samples),
+        "metrics" => result.metrics,
     ))
     return path
 end
@@ -204,10 +240,22 @@ function run_nbody_experiment(cfg::Dict{String,Any})
     samples = generate_cnf_samples(
         ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng)
 
-    result = ExperimentResult(cfg, train_data, params, losses, samples, _output_dir(cfg))
+    metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
+        "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
+    ))
+    if data_cfg.kind in (:polymer_langevin, :rouse_hdf5)
+        force_targets = _polymer_langevin_force_targets(train_data, data_cfg)
+        metrics["gradlogp_force_mse"] = _cnf_gradlogp_force_mse_metric(
+            ctx, params, train_data, force_targets;
+            batch_size=cfgint(cfg, "training.batch_size", 64),
+            rng,
+        )
+    end
+
+    result = ExperimentResult(cfg, train_data, params, losses, samples,
+                              _output_dir(cfg), metrics)
     result_path = _save_result(result)
     plot_path = _maybe_plot_result(result)
-    metrics = _sample_metrics(train_data, samples)
     @info "experiment complete" output_dir=result.output_dir result_path plot_path metrics
     return result
 end

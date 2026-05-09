@@ -24,7 +24,7 @@ model:
   hidden_dims: [64, 64, 64]
 
 diffusion:
-  objective: force_matching
+  objective: denoising
   steps: 100
   beta_start: 1.0e-4
   beta_end: 2.0e-2
