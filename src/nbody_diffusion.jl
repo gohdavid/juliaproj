@@ -1,6 +1,7 @@
 export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
 export build_diffusion_model, init_diffusion_params, diffusion_loss
 export train_diffusion_adam, generate_diffusion_samples, predict_diffusion_score
+export diffusion_logp_gradient
 export alpha, beta, forward_noise, euler_maruyama_sample
 
 struct EquivariantDiffusionModel
@@ -120,6 +121,18 @@ function predict_diffusion_score(ctx::NBodyDiffusionContext, params, x_batch;
     h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, batch_size, ctx.device)
     return _equivariant_diffusion_prediction(
         x, t, params; model, h_i_flat, h_j_flat, mask)
+end
+
+"""
+    diffusion_logp_gradient(ctx, params, x_batch; time=_T_MIN_F32)
+
+Return the diffusion model score, interpreted as `grad_x logP_t(x)`, for every
+sample in `x_batch`. By default this evaluates real inputs at the minimum
+sampled training time rather than at exactly zero diffusion time.
+"""
+function diffusion_logp_gradient(ctx::NBodyDiffusionContext, params, x_batch;
+                                 time::Real=_T_MIN_F32)
+    return predict_diffusion_score(ctx, params, x_batch; time)
 end
 
 function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
