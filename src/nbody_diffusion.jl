@@ -1,6 +1,7 @@
 export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
 export build_diffusion_model, init_diffusion_params, diffusion_loss
 export train_diffusion_adam, generate_diffusion_samples, predict_diffusion_score
+export alpha, beta, forward_noise, euler_maruyama_sample
 
 struct EquivariantDiffusionModel
     dim::Int
@@ -13,19 +14,7 @@ end
 struct NBodyDiffusionContext
     model::EquivariantDiffusionModel
     device
-    n_steps::Int
-    betas::Vector{Float32}
-    alphas::Vector{Float32}
-    alpha_bars::Vector{Float32}
-    objective::Symbol
-    langevin_step_size::Float32
-end
-
-function NBodyDiffusionContext(model::EquivariantDiffusionModel, device, n_steps::Int,
-                               betas::Vector{Float32}, alphas::Vector{Float32},
-                               alpha_bars::Vector{Float32})
-    return NBodyDiffusionContext(model, device, n_steps, betas, alphas, alpha_bars,
-                                 :denoising, 1.0f-3)
+    sample_steps::Int
 end
 
 struct DiffusionResult
@@ -53,11 +42,36 @@ function init_diffusion_params(rng::AbstractRNG, model::EquivariantDiffusionMode
     return ComponentArray(params) |> device
 end
 
-function _diffusion_schedule(n_steps::Int, beta_start::Real, beta_end::Real)
-    betas = Float32.(range(Float32(beta_start), Float32(beta_end); length=n_steps))
-    alphas = 1.0f0 .- betas
-    alpha_bars = accumulate(*, alphas)
-    return betas, alphas, alpha_bars
+const _HALF_PI_F32 = Float32(pi / 2)
+const _T_MIN_F32 = 1.0f-5
+
+function beta(t)
+    return @. sin(_HALF_PI_F32 * t)
+end
+
+function alpha(t)
+    return @. cos(_HALF_PI_F32 * t)
+end
+
+function _as_batch_time(t, batch_size::Int, device)
+    if t isa Number
+        return fill(Float32(t), 1, 1, batch_size) |> device
+    end
+    t_arr = Float32.(t)
+    if ndims(t_arr) == 1
+        length(t_arr) == batch_size ||
+            error("Expected $batch_size time values, got $(length(t_arr)).")
+        return reshape(t_arr, 1, 1, batch_size) |> device
+    end
+    return t_arr |> device
+end
+
+function forward_noise(x0, t; rng::AbstractRNG=Random.default_rng(), device=identity)
+    batch_size = size(x0, ndims(x0))
+    t_batch = _as_batch_time(t, batch_size, device)
+    eps = randn(rng, eltype(x0), size(x0)...) |> device
+    xt = @. alpha(t_batch) * x0 + beta(t_batch) * eps
+    return xt, eps
 end
 
 function _diffusion_fixed_inputs(model::EquivariantDiffusionModel, batch_size::Int, device)
@@ -97,57 +111,36 @@ function _equivariant_diffusion_prediction(x, t, params;
     return center_positions(reshape(pred, dim, n_atoms, batch_size))
 end
 
-function predict_diffusion_score(ctx::NBodyDiffusionContext, params, x_batch)
+function predict_diffusion_score(ctx::NBodyDiffusionContext, params, x_batch;
+                                 time::Real=_T_MIN_F32)
     model = ctx.model
     batch_size = size(x_batch, 3)
     x = x_batch |> ctx.device
-    t = zeros(Float32, 1, 1, batch_size) |> ctx.device
+    t = fill(Float32(time), 1, 1, batch_size) |> ctx.device
     h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, batch_size, ctx.device)
     return _equivariant_diffusion_prediction(
         x, t, params; model, h_i_flat, h_j_flat, mask)
 end
 
-function force_matching_loss(ctx::NBodyDiffusionContext, params, x_batch, score_batch)
-    pred = predict_diffusion_score(ctx, params, x_batch)
-    target = score_batch |> ctx.device
-    return sum(abs2, pred .- Zygote.dropgrad(target)) / Float32(length(pred))
-end
-
 function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
-                        score_batch=nothing,
-                        rng::AbstractRNG=Random.default_rng())
-    if ctx.objective == :force_matching
-        score_batch === nothing &&
-            error("diffusion objective force_matching requires score targets.")
-        return force_matching_loss(ctx, params, x_batch, score_batch)
-    elseif ctx.objective != :denoising
-        error("Unknown diffusion objective: $(ctx.objective)")
-    end
-
+    rng::AbstractRNG=Random.default_rng())
     model = ctx.model
-    dim, n_atoms, batch_size = size(x_batch)
+    batch_size = size(x_batch, 3)
     x0 = x_batch |> ctx.device
-    eps = center_positions(randn(rng, Float32, dim, n_atoms, batch_size)) |> ctx.device
-    t_idx = rand(rng, 1:ctx.n_steps, batch_size)
-    alpha_bar = reshape(ctx.alpha_bars[t_idx], 1, 1, batch_size) |> ctx.device
-    xt = sqrt.(alpha_bar) .* x0 .+ sqrt.(1.0f0 .- alpha_bar) .* eps
-    t = reshape(Float32.(t_idx) ./ Float32(ctx.n_steps), 1, 1, batch_size) |>
-        ctx.device
+    t = (_T_MIN_F32 .+ (1.0f0 - _T_MIN_F32) .*
+         rand(rng, Float32, 1, 1, batch_size)) |> ctx.device
+    xt, eps = forward_noise(x0, t; rng, device=ctx.device)
 
     h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, batch_size, ctx.device)
-    pred = _equivariant_diffusion_prediction(
+    score = _equivariant_diffusion_prediction(
         xt, t, params; model, h_i_flat, h_j_flat, mask)
-    return sum(abs2, pred .- Zygote.dropgrad(eps)) / Float32(length(pred))
+    return mean(abs2, @. beta(t) * score + Zygote.dropgrad(eps))
 end
 
 function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
-                              score_targets=nothing,
                               epochs::Int=25, batch_size::Int=64,
                               learning_rate::Real=1f-3,
                               rng::AbstractRNG=Xoshiro(42))
-    if ctx.objective == :force_matching && score_targets === nothing
-        error("force_matching diffusion training requires score_targets.")
-    end
     n_samples = size(train_data, 3)
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
     loss_history = Float32[]
@@ -159,11 +152,10 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
             batch_stop = min(batch_start + batch_size - 1, n_samples)
             batch_idx = shuffled_idx[batch_start:batch_stop]
             x_batch = train_data[:, :, batch_idx]
-            score_batch = score_targets === nothing ? nothing : score_targets[:, :, batch_idx]
             local_batch_size = length(batch_idx)
 
             loss, grads = Zygote.withgradient(
-                p -> diffusion_loss(ctx, p, x_batch; score_batch, rng), params)
+                p -> diffusion_loss(ctx, p, x_batch; rng), params)
             grad_params = grads[1]
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
@@ -180,49 +172,67 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
     return params, opt_state, loss_history
 end
 
+function _reverse_sde_coefficients(t::Float32)
+    f_t = Float32(-(pi / 2) * tan((pi / 2) * Float64(t)))
+    g2_t = -2.0f0 * f_t
+    g_t = sqrt(g2_t)
+    return f_t, g2_t, g_t
+end
+
+function euler_maruyama_sample(model, shape; num_steps::Int=1000,
+                               rng::AbstractRNG=Random.default_rng())
+    x_t = randn(rng, Float32, shape...)
+    batch_size = shape[end]
+    time_steps = range(1.0f0, 1.0f-4; length=num_steps)
+    dt = 1.0f0 / Float32(num_steps)
+    sqrt_dt = sqrt(dt)
+
+    for (step, t_raw) in enumerate(time_steps)
+        t = Float32(t_raw)
+        f_t, g2_t, g_t = _reverse_sde_coefficients(t)
+        score = model(x_t, fill(t, batch_size))
+        z = step == num_steps ? zero.(x_t) : randn(rng, eltype(x_t), size(x_t)...)
+        dx = @. (f_t * x_t - g2_t * score) * dt
+        noise = @. g_t * sqrt_dt * z
+        x_t = @. x_t - dx + noise
+    end
+
+    return x_t
+end
+
+function euler_maruyama_sample(ctx::NBodyDiffusionContext, params, shape;
+                               num_steps::Int=ctx.sample_steps,
+                               rng::AbstractRNG=Random.default_rng())
+    model = ctx.model
+    x_t = randn(rng, Float32, shape...) |> ctx.device
+    batch_size = shape[end]
+    h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, batch_size, ctx.device)
+    time_steps = range(1.0f0, 1.0f-4; length=num_steps)
+    dt = 1.0f0 / Float32(num_steps)
+    sqrt_dt = sqrt(dt)
+
+    for (step, t_raw) in enumerate(time_steps)
+        t = Float32(t_raw)
+        f_t, g2_t, g_t = _reverse_sde_coefficients(t)
+        t_batch = fill(t, 1, 1, batch_size) |> ctx.device
+        score = _equivariant_diffusion_prediction(
+            x_t, t_batch, params; model, h_i_flat, h_j_flat, mask)
+        z = step == num_steps ?
+            zero.(x_t) :
+            (randn(rng, eltype(x_t), size(x_t)...) |> ctx.device)
+        dx = @. (f_t * x_t - g2_t * score) * dt
+        noise = @. g_t * sqrt_dt * z
+        x_t = @. x_t - dx + noise
+    end
+
+    return x_t
+end
+
 function generate_diffusion_samples(ctx::NBodyDiffusionContext, params,
                                     n_samples::Int;
                                     rng::AbstractRNG=Random.default_rng())
     model = ctx.model
-    x = center_positions(randn(rng, Float32, model.dim, model.n_atoms, n_samples)) |>
-        ctx.device
-    h_i_flat, h_j_flat, mask = _diffusion_fixed_inputs(model, n_samples, ctx.device)
-
-    if ctx.objective == :force_matching
-        dt = ctx.langevin_step_size
-        noise_scale = sqrt(2.0f0 * dt)
-        t = zeros(Float32, 1, 1, n_samples) |> ctx.device
-        for _ in 1:ctx.n_steps
-            score = _equivariant_diffusion_prediction(
-                x, t, params; model, h_i_flat, h_j_flat, mask)
-            z = center_positions(randn(rng, Float32, model.dim, model.n_atoms, n_samples)) |>
-                ctx.device
-            x = center_positions(x .+ dt .* score .+ noise_scale .* z)
-        end
-        return x
-    elseif ctx.objective != :denoising
-        error("Unknown diffusion objective: $(ctx.objective)")
-    end
-
-    for step in ctx.n_steps:-1:1
-        beta = ctx.betas[step]
-        alpha = ctx.alphas[step]
-        alpha_bar = ctx.alpha_bars[step]
-        t = fill(Float32(step) / Float32(ctx.n_steps), 1, 1, n_samples) |>
-            ctx.device
-        eps_pred = _equivariant_diffusion_prediction(
-            x, t, params; model, h_i_flat, h_j_flat, mask)
-        x = (x .- (beta / sqrt(1.0f0 - alpha_bar)) .* eps_pred) ./ sqrt(alpha)
-
-        if step > 1
-            prev_alpha_bar = ctx.alpha_bars[step - 1]
-            posterior_var = beta * (1.0f0 - prev_alpha_bar) / (1.0f0 - alpha_bar)
-            z = center_positions(randn(rng, Float32, model.dim, model.n_atoms, n_samples)) |>
-                ctx.device
-            x = x .+ sqrt(posterior_var) .* z
-        end
-        x = center_positions(x)
-    end
-
-    return x
+    shape = (model.dim, model.n_atoms, n_samples)
+    return euler_maruyama_sample(ctx, params, shape;
+                                 num_steps=ctx.sample_steps, rng)
 end
