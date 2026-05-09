@@ -103,26 +103,9 @@ function _sample_metrics(train_data, samples)
     )
 end
 
-function _polymer_langevin_score_targets(train_data, data_cfg::NBodyDataConfig)
-    data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ||
-        error("score_matching diffusion currently requires polymer_langevin or rouse_hdf5 data")
-    p = data_cfg.physics_params
-    diffusion = length(p) >= 1 ? p[1] : 1.0f0
-    bond_length = length(p) >= 2 ? p[2] : 1.0f0
-    k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
-    nonideal = polymer_nonideal_params(p)
-
-    targets = similar(train_data)
-    for i in axes(train_data, 3)
-        polymer_langevin_score!(@view(targets[:, :, i]), @view(train_data[:, :, i]),
-                                diffusion, k_over_xi, nonideal)
-    end
-    return targets
-end
-
 function _polymer_langevin_force_targets(train_data, data_cfg::NBodyDataConfig)
     data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ||
-        error("CNF force evaluation currently requires polymer_langevin or rouse_hdf5 data")
+        error("Force evaluation currently requires polymer_langevin or rouse_hdf5 data")
     p = data_cfg.physics_params
     diffusion = length(p) >= 1 ? p[1] : 1.0f0
     bond_length = length(p) >= 2 ? p[2] : 1.0f0
@@ -137,12 +120,6 @@ function _polymer_langevin_force_targets(train_data, data_cfg::NBodyDataConfig)
     return targets
 end
 
-function _score_mse_metric(ctx::NBodyDiffusionContext, params, train_data, score_targets)
-    pred = DiffEqFlux.Lux.cpu_device()(predict_diffusion_score(ctx, params, train_data))
-    target = DiffEqFlux.Lux.cpu_device()(score_targets)
-    return Float32(mean(abs2, pred .- target))
-end
-
 function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
                                         force_targets; batch_size::Int=64,
                                         rng::AbstractRNG=Random.default_rng())
@@ -154,6 +131,24 @@ function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data
         batch_idx = batch_start:batch_stop
         pred = DiffEqFlux.Lux.cpu_device()(
             cnf_logp_gradient(ctx, params, train_data[:, :, batch_idx]; rng))
+        target = @view(force_targets[:, :, batch_idx])
+        sqerr += sum(abs2, pred .- target)
+        n_values += length(target)
+    end
+    return Float32(sqerr / n_values)
+end
+
+function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params,
+                                             train_data, force_targets;
+                                             batch_size::Int=64)
+    n_samples = size(train_data, 3)
+    sqerr = 0.0
+    n_values = 0
+    for batch_start in 1:batch_size:n_samples
+        batch_stop = min(batch_start + batch_size - 1, n_samples)
+        batch_idx = batch_start:batch_stop
+        pred = DiffEqFlux.Lux.cpu_device()(
+            diffusion_logp_gradient(ctx, params, train_data[:, :, batch_idx]))
         target = @view(force_targets[:, :, batch_idx])
         sqerr += sum(abs2, pred .- target)
         n_values += length(target)
@@ -361,19 +356,9 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
         n_atoms=data_cfg.n_atoms,
         hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
     )
-    n_steps = cfgint(cfg, "diffusion.steps", 100)
-    betas, alphas, alpha_bars = _diffusion_schedule(
-        n_steps,
-        cfgfloat32(cfg, "diffusion.beta_start", 1f-4),
-        cfgfloat32(cfg, "diffusion.beta_end", 2f-2),
-    )
-    objective = cfgsymbol(cfg, "diffusion.objective", "denoising")
-    ctx = NBodyDiffusionContext(model, device, n_steps, betas, alphas, alpha_bars,
-                                objective)
+    sample_steps = cfgint(cfg, "sampling.steps", cfgint(cfg, "diffusion.steps", 1000))
+    ctx = NBodyDiffusionContext(model, device, sample_steps)
     params = init_diffusion_params(rng, model; device)
-    score_targets = objective == :score_matching &&
-                    data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ?
-                    _polymer_langevin_score_targets(train_data, data_cfg) : nothing
 
     params, _, losses = train_diffusion_adam(
         ctx, params, train_data;
@@ -390,8 +375,12 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
     metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
         "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
     ))
-    if score_targets !== nothing
-        metrics["score_mse"] = _score_mse_metric(ctx, params, train_data, score_targets)
+    if data_cfg.kind in (:polymer_langevin, :rouse_hdf5)
+        force_targets = _polymer_langevin_force_targets(train_data, data_cfg)
+        metrics["gradlogp_force_mse"] = _diffusion_gradlogp_force_mse_metric(
+            ctx, params, train_data, force_targets;
+            batch_size=cfgint(cfg, "training.batch_size", 64),
+        )
     end
 
     result = DiffusionResult(cfg, train_data, params, losses, samples,
