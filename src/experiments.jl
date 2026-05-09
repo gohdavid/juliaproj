@@ -355,6 +355,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
         dim=data_cfg.dim,
         n_atoms=data_cfg.n_atoms,
         hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
+        n_layers=cfgint(cfg, "model.n_layers", 4),
     )
     sample_steps = cfgint(cfg, "sampling.steps", cfgint(cfg, "diffusion.steps", 1000))
     ctx = NBodyDiffusionContext(model, device, sample_steps)

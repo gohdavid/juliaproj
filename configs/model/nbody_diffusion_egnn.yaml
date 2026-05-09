@@ -19,6 +19,7 @@ model:
   name: diffusion_egnn
   equivariant: true
   hidden_dims: [64, 64, 64]
+  n_layers: 4
 
 training:
   epochs: 30
