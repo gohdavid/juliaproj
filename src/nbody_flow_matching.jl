@@ -107,6 +107,9 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
                                   checkpoint_callback=nothing,
                                   rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
+    steps_per_epoch = cld(n_samples, batch_size)
+    total_steps = epochs * steps_per_epoch
+    step = 0
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
     loss_history = Float32[]
 
@@ -125,6 +128,7 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
             opt_state, params = Optimisers.update(opt_state, params, grad_params)
+            step += 1
             loss_f32 = Float32(loss)
             isfinite(loss_f32) ||
                 error("Non-finite flow-matching loss at epoch=$epoch batch=$batch_num: $loss_f32")
@@ -133,7 +137,7 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
         end
         mean_loss = Float32(epoch_loss / n_samples)
         if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
-            @info "flow_matching_training" epoch loss=mean_loss
+            @info "flow_matching_training" epoch step total_steps steps_per_epoch loss=mean_loss
         end
         if checkpoint_callback !== nothing
             checkpoint_callback(;

@@ -123,6 +123,9 @@ function nonideal_param_vector(sim_cfg)
     ev = get(nonideal, "excluded_volume", Dict())
     conf = get(nonideal, "confinement", Dict())
     return Float32[
+        0.0f0,
+        0.0f0,
+        0.0f0,
         get(lj, "enabled", false) ? 1.0f0 : 0.0f0,
         Float32(get(lj, "epsilon", 0.0f0)),
         Float32(get(lj, "sigma", 1.0f0)),
@@ -200,13 +203,7 @@ function chain_points(x)
 end
 
 function axis_limits(traj; pad=0.18f0)
-    xmin, xmax = extrema(vec(traj[1, :, :]))
-    ymin, ymax = extrema(vec(traj[2, :, :]))
-    width = max(xmax - xmin, ymax - ymin)
-    cx = (xmax + xmin) / 2
-    cy = (ymax + ymin) / 2
-    half = width * (0.5 + pad)
-    return (cx - half, cx + half), (cy - half, cy + half)
+    return (-10.0f0, 10.0f0), (-10.0f0, 10.0f0)
 end
 
 function save_chain_frames(traj, times, tau_r, frame_dir)

@@ -69,6 +69,9 @@ function nonideal_param_vector(sim_cfg)
     ev = get(nonideal, "excluded_volume", Dict{String,Any}())
     conf = get(nonideal, "confinement", Dict{String,Any}())
     return Float32[
+        0.0f0,
+        0.0f0,
+        0.0f0,
         get(lj, "enabled", false) ? 1.0f0 : 0.0f0,
         Float32(get(lj, "epsilon", 0.0f0)),
         Float32(get(lj, "sigma", 1.0f0)),
@@ -167,6 +170,7 @@ function load_values(label, cfg_path)
     k_over_xi = sim_cfg["k_over_xi"]
     potentials = Float32[]
     score_norm2 = Float32[]
+    force_norm = Float32[]
     for path in paths
         isfile(path) || error("Missing trajectory file: $path")
         h5open(path, "r") do h5
@@ -174,14 +178,16 @@ function load_values(label, cfg_path)
             for i in 1:written
                 x = h5["traj"][:, :, i]
                 push!(potentials, analytic_potential(x, diffusion, k_over_xi, sim_cfg))
-                push!(score_norm2, analytic_score_norm2(x, diffusion, k_over_xi, sim_cfg))
+                norm2 = analytic_score_norm2(x, diffusion, k_over_xi, sim_cfg)
+                push!(score_norm2, norm2)
+                push!(force_norm, Float32(diffusion) * sqrt(norm2))
             end
         end
     end
-    @printf("%-18s N=%d mean_U=%.4f std_U=%.4f mean_score=%.4f std_score=%.4f\n",
+    @printf("%-18s N=%d mean_U=%.4f std_U=%.4f mean_force=%.4f std_force=%.4f mean_score2=%.4f std_score2=%.4f\n",
             label, length(potentials), mean(potentials), std(potentials),
-            mean(score_norm2), std(score_norm2))
-    return (; label, potentials, score_norm2)
+            mean(force_norm), std(force_norm), mean(score_norm2), std(score_norm2))
+    return (; label, potentials, score_norm2, force_norm)
 end
 
 function main()
@@ -196,10 +202,13 @@ function main()
 
     potential_all = reduce(vcat, (Float64.(d.potentials) for d in data))
     score_all = reduce(vcat, (Float64.(d.score_norm2) for d in data))
+    force_all = reduce(vcat, (Float64.(d.force_norm) for d in data))
     potential_edges = collect(range(max(0.0, minimum(potential_all) - 1.0),
                                     maximum(potential_all) + 1.0; length=75))
     score_edges = collect(range(max(0.0, minimum(score_all) - 15.0),
                                 maximum(score_all) + 15.0; length=90))
+    force_edges = collect(range(max(0.0, minimum(force_all) - 1.0),
+                                maximum(force_all) + 1.0; length=90))
 
     colors = [colorant"#000000", colorant"#0072B2", colorant"#D55E00",
               colorant"#009E73", colorant"#CC79A7"]
@@ -230,6 +239,22 @@ function main()
     out_path = joinpath(out_dir, "rouse_potential_score_overlay.png")
     save(out_path, fig)
     println("Saved overlay: $out_path")
+
+    force_fig = Figure(size=(900, 620), backgroundcolor=:white)
+    ax_f = Axis(force_fig[1, 1], xlabel="||force(X)||", ylabel="probability density",
+                title="Force norm")
+    ax_f.xgridvisible[] = false
+    ax_f.ygridvisible[] = false
+    hidespines!(ax_f, :t, :r)
+    for (i, d) in enumerate(data)
+        xf, yf = histogram_density(d.force_norm, force_edges)
+        lines!(ax_f, xf, yf, color=colors[i], linewidth=3, label=d.label)
+        vlines!(ax_f, [mean(d.force_norm)], color=colors[i], linestyle=:dash, linewidth=1.6)
+    end
+    axislegend(ax_f, position=:rt)
+    force_path = joinpath(out_dir, "rouse_force_norm_overlay.png")
+    save(force_path, force_fig)
+    println("Saved force overlay: $force_path")
 end
 
 main()

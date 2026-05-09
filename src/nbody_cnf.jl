@@ -15,6 +15,7 @@ end
 struct EGNNVectorField <: AbstractNBodyVectorField
     dim::Int
     n_atoms::Int
+    node_embedding_dim::Int
     hidden_dims::Vector{Int}
     edge_net
 end
@@ -39,7 +40,9 @@ function _dense_chain(input_dim::Int, output_dim::Int, hidden_dims::Vector{Int};
     return DiffEqFlux.Chain(layers...)
 end
 
-function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10, hidden_dims=[64, 64, 64])
+function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10,
+                            hidden_dims=[64, 64, 64],
+                            node_embedding_dim::Int=min(16, n_atoms))
     hidden = Int.(hidden_dims)
     if kind == :mlp
         input_dim = dim * n_atoms + 1
@@ -47,9 +50,9 @@ function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10, hidden_di
         return MLPVectorField(dim, n_atoms, hidden,
                               _dense_chain(input_dim, output_dim, hidden))
     elseif kind == :egnn
-        input_dim = 2 * n_atoms + 3
-        return EGNNVectorField(dim, n_atoms, hidden,
-                               _dense_chain(input_dim, dim, hidden))
+        input_dim = 2 * node_embedding_dim + 3
+        return EGNNVectorField(dim, n_atoms, node_embedding_dim, hidden,
+                               _dense_chain(input_dim, 1, hidden))
     else
         error("Unknown vector field kind: $kind")
     end
@@ -61,8 +64,9 @@ function init_cnf_params(rng::AbstractRNG, field::MLPVectorField; device=identit
 end
 
 function init_cnf_params(rng::AbstractRNG, field::EGNNVectorField; device=identity)
-    params, _ = DiffEqFlux.Lux.setup(rng, field.edge_net)
-    return ComponentArray(params) |> device
+    edge_params, _ = DiffEqFlux.Lux.setup(rng, field.edge_net)
+    node_embed = 0.1f0 .* randn(rng, Float32, field.node_embedding_dim, field.n_atoms)
+    return ComponentArray(edge_net=edge_params, node_embed=node_embed) |> device
 end
 
 function forward_mlp_generic_jvp(input, params, jvp_probe)
@@ -137,9 +141,8 @@ end
 function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     n_atoms = field.n_atoms
 
-    h_fixed = Matrix{Float32}(I, n_atoms, n_atoms)
-    h_i_flat = repeat(h_fixed, outer=(1, n_atoms * batch_size)) |> device
-    h_j_flat = repeat(h_fixed, inner=(1, n_atoms), outer=(1, batch_size)) |> device
+    edge_i = repeat(collect(1:n_atoms), outer=n_atoms * batch_size) |> device
+    edge_j = repeat(collect(1:n_atoms), inner=n_atoms, outer=batch_size) |> device
 
     seq_dist_fixed = Float32[i - j for i in 1:n_atoms, j in 1:n_atoms]
     seq_dist_fixed = reshape(seq_dist_fixed, 1, n_atoms * n_atoms)
@@ -148,15 +151,16 @@ function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
                    1, n_atoms, n_atoms, 1) |> device
 
-    jvp_probe = vcat(zeros(Float32, 2*n_atoms+1, 1),
+    node_embedding_dim = field.node_embedding_dim
+    jvp_probe = vcat(zeros(Float32, 2*node_embedding_dim+1, 1),
                      ones(Float32, 1, 1),
                      zeros(Float32, 1, 1)) |> device
 
-    return h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe
+    return edge_i, edge_j, seq_dist_flat, mask, jvp_probe
 end
 
 function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
-                              h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+                              edge_i, edge_j, seq_dist_flat, mask, jvp_probe)
     x = u.x
     dim, n_atoms, batch_size = size(x)
     x_i = reshape(x, dim, n_atoms, 1, batch_size)
@@ -166,10 +170,12 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     d_ij_flat = reshape(d_ij, 1, n_atoms * n_atoms * batch_size)
     t_flat = d_ij_flat .* zero(eltype(x)) .+ eltype(x)(t)
 
+    h_i_flat = params.node_embed[:, edge_i]
+    h_j_flat = params.node_embed[:, edge_j]
     net_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
-    m_flat, dm_flat = forward_mlp_generic_jvp(net_input, params, jvp_probe)
-    m_ij = reshape(m_flat, dim, n_atoms, n_atoms, batch_size)
-    dm_ij = reshape(dm_flat, dim, n_atoms, n_atoms, batch_size)
+    m_flat, dm_flat = forward_mlp_generic_jvp(net_input, params.edge_net, jvp_probe)
+    m_ij = reshape(m_flat, 1, n_atoms, n_atoms, batch_size)
+    dm_ij = reshape(dm_flat, 1, n_atoms, n_atoms, batch_size)
 
     denom = d_ij .+ one(eltype(x))
     w_ij = (m_ij ./ denom) .* mask
@@ -179,7 +185,7 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     dx = sum(dx_terms; dims=3) ./ Float32(n_atoms)
     dx = reshape(dx, dim, n_atoms, batch_size)
 
-    trace_terms = w_ij .+ 2.0f0 .* r_ij.^2 .* dw_ij
+    trace_terms = Float32(dim) .* w_ij .+ 2.0f0 .* d_ij .* dw_ij
     trace_sum = sum(trace_terms; dims=(1, 2, 3)) ./ Float32(n_atoms)
     dlogp = -reshape(trace_sum, 1, batch_size)
     return ComponentArray(x=dx, logp=dlogp)
@@ -199,11 +205,11 @@ function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng)
                 u, p, t; field, probe_in, probe_out)
         end
     elseif field isa EGNNVectorField
-        h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
+        edge_i, edge_j, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
             _egnn_fixed_inputs(field, batch_size, ctx.device)
         end
         ode_func = (u, p, t) -> _egnn_exact_dynamics(
-            u, p, t; field, h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+            u, p, t; field, edge_i, edge_j, seq_dist_flat, mask, jvp_probe)
     else
         error("Unsupported vector field $(typeof(field))")
     end
@@ -219,7 +225,9 @@ function _cnf_logp_device(ctx::NBodyCNFContext, params, x_dev; rng)
     u0 = ComponentArray(x=x_dev, logp=zeros(Float32, 1, batch_size) |> ctx.device)
     prob = _cnf_problem(ctx, params, batch_size, ctx.tspan; rng)
     sol = solve(remake(prob; u0, p=params), ctx.solver;
-                abstol=ctx.abstol, reltol=ctx.reltol, verbose=false)
+                abstol=ctx.abstol, reltol=ctx.reltol,
+                save_everystep=false, save_start=false, save_end=true,
+                verbose=false)
     x_noise = sol.u[end].x
     delta_logp = sol.u[end].logp
     return log_standard_normal(x_noise) .- delta_logp
@@ -259,6 +267,9 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
                         checkpoint_callback=nothing,
                         rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
+    steps_per_epoch = cld(n_samples, batch_size)
+    total_steps = epochs * steps_per_epoch
+    step = 0
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
     loss_history = Float32[]
 
@@ -276,6 +287,7 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
             opt_state, params = Optimisers.update(opt_state, params, grad_params)
+            step += 1
             loss_f32 = Float32(loss)
             isfinite(loss_f32) ||
                 error("Non-finite loss at epoch=$epoch batch=$batch_num: $loss_f32")
@@ -284,7 +296,7 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
         end
         mean_loss = Float32(epoch_loss / n_samples)
         if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
-            @info "training" epoch loss=mean_loss
+            @info "training" epoch step total_steps steps_per_epoch loss=mean_loss
         end
         if checkpoint_callback !== nothing
             checkpoint_callback(;
@@ -308,6 +320,8 @@ function generate_cnf_samples(ctx::NBodyCNFContext, params, n_samples::Int;
     reverse_tspan = (ctx.tspan[2], ctx.tspan[1])
     prob = _cnf_problem(ctx, params, n_samples, reverse_tspan; rng)
     sol = solve(remake(prob; u0, p=params), ctx.solver;
-                abstol=ctx.abstol, reltol=ctx.reltol, verbose=false)
+                abstol=ctx.abstol, reltol=ctx.reltol,
+                save_everystep=false, save_start=false, save_end=true,
+                verbose=false)
     return sol.u[end].x
 end

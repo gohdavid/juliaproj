@@ -56,10 +56,17 @@ function _make_context(cfg, field, device)
     )
 end
 
-function _output_dir(cfg)
+function _copy_config_snapshot(config_path, output_dir::AbstractString)
+    config_path === nothing && return nothing
+    cp(String(config_path), joinpath(output_dir, "config.yaml"); force=true)
+    return nothing
+end
+
+function _output_dir(cfg; config_path=nothing)
     default_name = "nbody_" * Dates.format(now(), "yyyymmdd_HHMMSS")
     path = config_output_dir(cfg; default_root="runs", default_name)
     mkpath(path)
+    _copy_config_snapshot(config_path, path)
     return path
 end
 
@@ -237,11 +244,11 @@ function _maybe_plot_result(result::DiffusionResult)
     return path
 end
 
-function run_nbody_experiment(cfg::Dict{String,Any})
+function run_nbody_experiment(cfg::Dict{String,Any}; config_path=nothing)
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
-    output_dir = _output_dir(cfg)
+    output_dir = _output_dir(cfg; config_path)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -254,6 +261,7 @@ function run_nbody_experiment(cfg::Dict{String,Any})
         dim=data_cfg.dim,
         n_atoms=data_cfg.n_atoms,
         hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
+        node_embedding_dim=cfgint(cfg, "model.node_embedding_dim", min(16, data_cfg.n_atoms)),
     )
     ctx = _make_context(cfg, field, device)
     params = init_cnf_params(rng, field; device)
@@ -291,11 +299,11 @@ function run_nbody_experiment(cfg::Dict{String,Any})
     return result
 end
 
-function run_nbody_flow_matching_experiment(cfg::Dict{String,Any})
+function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=nothing)
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
-    output_dir = _output_dir(cfg)
+    output_dir = _output_dir(cfg; config_path)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -339,11 +347,11 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any})
     return result
 end
 
-function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
+function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothing)
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
-    output_dir = _output_dir(cfg)
+    output_dir = _output_dir(cfg; config_path)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -356,6 +364,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
         n_atoms=data_cfg.n_atoms,
         hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
         n_layers=cfgint(cfg, "model.n_layers", 4),
+        node_embedding_dim=cfgint(cfg, "model.node_embedding_dim", min(16, data_cfg.n_atoms)),
     )
     sample_steps = cfgint(cfg, "sampling.steps", cfgint(cfg, "diffusion.steps", 1000))
     ctx = NBodyDiffusionContext(model, device, sample_steps)
@@ -394,17 +403,17 @@ end
 
 function run_experiment(config_path::AbstractString)
     cfg = load_yaml_config(config_path)
-    return run_experiment(cfg)
+    return run_experiment(cfg; config_path)
 end
 
-function run_experiment(cfg::Dict{String,Any})
+function run_experiment(cfg::Dict{String,Any}; config_path=nothing)
     family = cfgsymbol(cfg, "experiment.family", "nbody_cnf")
     if family == :nbody_cnf
-        return run_nbody_experiment(cfg)
+        return run_nbody_experiment(cfg; config_path)
     elseif family in (:nbody_flow_matching, :nbody_fm, :nbody_equivariant_fm)
-        return run_nbody_flow_matching_experiment(cfg)
+        return run_nbody_flow_matching_experiment(cfg; config_path)
     elseif family in (:nbody_diffusion, :nbody_equivariant_diffusion)
-        return run_nbody_diffusion_experiment(cfg)
+        return run_nbody_diffusion_experiment(cfg; config_path)
     end
     error("Unsupported experiment.family: $family")
 end

@@ -92,6 +92,12 @@ function output_paths(raw_cfg)
     return output_path, hdf5_path
 end
 
+function copy_config_snapshot(cfg_path::AbstractString, out_dir::AbstractString)
+    mkpath(out_dir)
+    cp(cfg_path, joinpath(out_dir, "config.yaml"); force=true)
+    return nothing
+end
+
 function cfgset!(cfg::AbstractDict, path::AbstractString, value)
     cur = cfg
     parts = split(path, ".")
@@ -372,6 +378,7 @@ function main()
     log_progress = BoltzFlow.cfgbool(raw_cfg, "logging.progress", true)
     progress_steps = BoltzFlow.cfgint(raw_cfg, "logging.progress_steps", 10_000)
     output_path, hdf5_path = output_paths(raw_cfg)
+    copy_config_snapshot(cfg_path, dirname(output_path))
     nonideal_params, nonideal_config = build_nonideal_params(raw_cfg)
 
     tau_r = rouse_relaxation_time(n_beads, k_over_xi)

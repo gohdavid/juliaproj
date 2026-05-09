@@ -10,24 +10,24 @@ rouse:
 nonideal:
   lennard_jones:
     enabled: true
-    epsilon: 0.02
-    sigma: 0.8
-    softening: 0.4
+    epsilon: 0.03
+    sigma: 0.85
+    softening: 0.5
     cutoff: 2.0
     exclude_bonded: true
     shift: true
   excluded_volume:
     enabled: true
-    epsilon: 0.005
-    sigma: 0.8
-    softening: 0.4
+    epsilon: 0.008
+    sigma: 0.85
+    softening: 0.5
     power: 12.0
     cutoff: 2.0
     exclude_bonded: true
   confinement:
     enabled: true
-    strength: 0.001
-    centered: false
+    strength: 0.01
+    centered: true
 
 solver:
   algorithm: EM

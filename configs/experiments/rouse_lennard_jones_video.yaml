@@ -10,9 +10,9 @@ rouse:
 nonideal:
   lennard_jones:
     enabled: true
-    epsilon: 0.03
-    sigma: 0.8
-    softening: 0.4
+    epsilon: 0.04
+    sigma: 0.85
+    softening: 0.5
     cutoff: 2.0
     exclude_bonded: true
     shift: true

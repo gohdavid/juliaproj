@@ -7,12 +7,11 @@ export alpha, beta, forward_noise, euler_maruyama_sample
 struct EquivariantDiffusionModel
     dim::Int
     n_atoms::Int
+    node_embedding_dim::Int
     hidden_dims::Vector{Int}
     n_layers::Int
     edge_net
     edge_state
-    coord_net
-    coord_state
     node_net
     node_state
 end
@@ -35,30 +34,27 @@ end
 
 function build_diffusion_model(; dim::Int=2, n_atoms::Int=10,
                                hidden_dims=[64, 64, 64],
-                               n_layers::Int=4)
+                               n_layers::Int=4,
+                               node_embedding_dim::Int=min(16, n_atoms))
     hidden = Int.(hidden_dims)
-    message_dim = dim
-    edge_input_dim = 2 * n_atoms + 3
-    edge_net = _dense_chain(edge_input_dim, message_dim, hidden)
+    edge_input_dim = 2 * node_embedding_dim + 3
+    edge_net = _dense_chain(edge_input_dim, 1, hidden)
     edge_state = DiffEqFlux.Lux.initialstates(Random.default_rng(), edge_net)
-    coord_net = _dense_chain(message_dim, 1, hidden)
-    coord_state = DiffEqFlux.Lux.initialstates(Random.default_rng(), coord_net)
-    node_net = _dense_chain(n_atoms + message_dim, n_atoms, hidden)
+    node_net = _dense_chain(node_embedding_dim + 1, node_embedding_dim, hidden)
     node_state = DiffEqFlux.Lux.initialstates(Random.default_rng(), node_net)
-    return EquivariantDiffusionModel(dim, n_atoms, hidden, n_layers,
+    return EquivariantDiffusionModel(dim, n_atoms, node_embedding_dim, hidden, n_layers,
                                      edge_net, edge_state,
-                                     coord_net, coord_state,
                                      node_net, node_state)
 end
 
 function init_diffusion_params(rng::AbstractRNG, model::EquivariantDiffusionModel;
                                device=identity)
     edge_params, _ = DiffEqFlux.Lux.setup(rng, model.edge_net)
-    coord_params, _ = DiffEqFlux.Lux.setup(rng, model.coord_net)
     node_params, _ = DiffEqFlux.Lux.setup(rng, model.node_net)
+    node_embed = 0.1f0 .* randn(rng, Float32, model.node_embedding_dim, model.n_atoms)
     return ComponentArray((edge=edge_params,
-                           coord=coord_params,
-                           node=node_params)) |> device
+                           node=node_params,
+                           node_embed=node_embed)) |> device
 end
 
 const _HALF_PI_F32 = Float32(pi / 2)
@@ -97,9 +93,6 @@ end
 
 function _diffusion_fixed_inputs(model::EquivariantDiffusionModel, batch_size::Int, device)
     n_atoms = model.n_atoms
-    h_fixed = Matrix{Float32}(I, n_atoms, n_atoms)
-    h = repeat(reshape(h_fixed, n_atoms, n_atoms, 1), outer=(1, 1, batch_size)) |>
-        device
 
     seq_dist_fixed = Float32[i - j for i in 1:n_atoms, j in 1:n_atoms]
     seq_dist_fixed = reshape(seq_dist_fixed, 1, n_atoms * n_atoms)
@@ -107,16 +100,11 @@ function _diffusion_fixed_inputs(model::EquivariantDiffusionModel, batch_size::I
 
     mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
                    1, n_atoms, n_atoms, 1) |> device
-    return h, seq_dist_flat, mask
+    return seq_dist_flat, mask
 end
 
 function _diffusion_edge_message(input, params, model::EquivariantDiffusionModel)
     val, _ = model.edge_net(input, params.edge, model.edge_state)
-    return val
-end
-
-function _diffusion_coord_weight(input, params, model::EquivariantDiffusionModel)
-    val, _ = model.coord_net(input, params.coord, model.coord_state)
     return val
 end
 
@@ -145,9 +133,11 @@ end
 
 function _equivariant_diffusion_prediction(x, t, params;
                                            model::EquivariantDiffusionModel,
-                                           h, seq_dist_flat, mask)
+                                           seq_dist_flat, mask)
     dim, n_atoms, batch_size = size(x)
     x_l = x
+    h = repeat(reshape(params.node_embed, model.node_embedding_dim, n_atoms, 1),
+               outer=(1, 1, batch_size))
     mask_const = Zygote.dropgrad(mask)
     t_flat = repeat(reshape(t, 1, batch_size), inner=(1, n_atoms * n_atoms))
 
@@ -161,18 +151,16 @@ function _equivariant_diffusion_prediction(x, t, params;
         edge_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
 
         m_flat = _diffusion_edge_message(edge_input, params, model)
-        m_ij = reshape(m_flat, dim, n_atoms, n_atoms, batch_size)
-        coord_flat = _diffusion_coord_weight(m_flat, params, model)
-        coord_ij = reshape(coord_flat, 1, n_atoms, n_atoms, batch_size)
+        scalar_ij = reshape(m_flat, 1, n_atoms, n_atoms, batch_size)
 
-        dx = sum(r_ij .* (coord_ij .* mask_const); dims=3) ./ Float32(n_atoms)
+        dx = sum(r_ij .* (scalar_ij .* mask_const); dims=3) ./ Float32(n_atoms)
         x_l = x_l .+ reshape(dx, dim, n_atoms, batch_size)
 
-        m_i = sum(m_ij .* mask_const; dims=3)
-        node_input = vcat(reshape(h, n_atoms, n_atoms * batch_size),
-                          reshape(m_i, dim, n_atoms * batch_size))
+        m_i = sum(scalar_ij .* mask_const; dims=3)
+        node_input = vcat(reshape(h, model.node_embedding_dim, n_atoms * batch_size),
+                          reshape(m_i, 1, n_atoms * batch_size))
         h_flat = _diffusion_node_state(node_input, params, model)
-        h = h .+ reshape(h_flat, n_atoms, n_atoms, batch_size)
+        h = h .+ reshape(h_flat, model.node_embedding_dim, n_atoms, batch_size)
     end
 
     return center_positions(x_l .- x)
@@ -184,11 +172,11 @@ function predict_diffusion_score(ctx::NBodyDiffusionContext, params, x_batch;
     batch_size = size(x_batch, 3)
     x = center_positions(x_batch) |> ctx.device
     t = fill(Float32(time), 1, 1, batch_size) |> ctx.device
-    h, seq_dist_flat, mask = Zygote.ignore() do
+    seq_dist_flat, mask = Zygote.ignore() do
         _diffusion_fixed_inputs(model, batch_size, ctx.device)
     end
     score = _equivariant_diffusion_prediction(
-        x, t, params; model, h, seq_dist_flat, mask)
+        x, t, params; model, seq_dist_flat, mask)
     return center_positions(score)
 end
 
@@ -213,11 +201,11 @@ function diffusion_loss(ctx::NBodyDiffusionContext, params, x_batch;
          rand(rng, Float32, 1, 1, batch_size)) |> ctx.device
     xt, eps = forward_noise(x0, t; rng, device=ctx.device)
 
-    h, seq_dist_flat, mask = Zygote.ignore() do
+    seq_dist_flat, mask = Zygote.ignore() do
         _diffusion_fixed_inputs(model, batch_size, ctx.device)
     end
     score = _equivariant_diffusion_prediction(
-        xt, t, params; model, h, seq_dist_flat, mask)
+        xt, t, params; model, seq_dist_flat, mask)
     score = center_positions(score)
     return mean(abs2, @. beta(t) * score + Zygote.dropgrad(eps))
 end
@@ -229,6 +217,9 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
                               checkpoint_callback=nothing,
                               rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
+    steps_per_epoch = cld(n_samples, batch_size)
+    total_steps = epochs * steps_per_epoch
+    step = 0
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
     loss_history = Float32[]
 
@@ -247,6 +238,7 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
             opt_state, params = Optimisers.update(opt_state, params, grad_params)
+            step += 1
             loss_f32 = Float32(loss)
             isfinite(loss_f32) ||
                 error("Non-finite diffusion loss at epoch=$epoch batch=$batch_num: $loss_f32")
@@ -255,7 +247,7 @@ function train_diffusion_adam(ctx::NBodyDiffusionContext, params, train_data;
         end
         mean_loss = Float32(epoch_loss / n_samples)
         if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
-            @info "diffusion_training" epoch loss=mean_loss
+            @info "diffusion_training" epoch step total_steps steps_per_epoch loss=mean_loss
         end
         if checkpoint_callback !== nothing
             checkpoint_callback(;
@@ -311,14 +303,14 @@ function euler_maruyama_sample(ctx::NBodyDiffusionContext, params, shape;
                                rng::AbstractRNG=Random.default_rng())
     model = ctx.model
     batch_size = shape[end]
-    h, seq_dist_flat, mask = Zygote.ignore() do
+    seq_dist_flat, mask = Zygote.ignore() do
         _diffusion_fixed_inputs(model, batch_size, ctx.device)
     end
 
     diffusion_score = function (x_t, t_values)
         t_batch = reshape(t_values, 1, 1, batch_size)
         return _equivariant_diffusion_prediction(
-            x_t, t_batch, params; model, h, seq_dist_flat, mask)
+            x_t, t_batch, params; model, seq_dist_flat, mask)
     end
 
     return euler_maruyama_sample(diffusion_score, shape;
