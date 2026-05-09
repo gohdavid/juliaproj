@@ -159,6 +159,14 @@ function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     return edge_i, edge_j, seq_dist_flat, mask, jvp_probe
 end
 
+function center_of_mass(x)
+    return mean(x; dims=2)
+end
+
+function center_positions(x)
+    return x .- center_of_mass(x)
+end
+
 function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
                               edge_i, edge_j, seq_dist_flat, mask, jvp_probe)
     x = u.x
@@ -257,7 +265,7 @@ function cnf_logp_gradient(ctx::NBodyCNFContext, params, x_batch;
     x_dev = x_batch |> ctx.device
     grad = Zygote.gradient(x -> sum(_cnf_logp_device(ctx, params, x; rng)), x_dev)[1]
     grad === nothing && error("Zygote returned no coordinate gradient.")
-    return grad
+    return center_positions(grad)
 end
 
 function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
@@ -279,7 +287,7 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
         for (batch_num, batch_start) in enumerate(1:batch_size:n_samples)
             batch_stop = min(batch_start + batch_size - 1, n_samples)
             batch_idx = shuffled_idx[batch_start:batch_stop]
-            x_batch = train_data[:, :, batch_idx]
+            x_batch = center_positions(train_data[:, :, batch_idx])
             local_batch_size = length(batch_idx)
 
             loss, grads = Zygote.withgradient(p -> cnf_nll(ctx, p, x_batch; rng), params)
@@ -323,5 +331,5 @@ function generate_cnf_samples(ctx::NBodyCNFContext, params, n_samples::Int;
                 abstol=ctx.abstol, reltol=ctx.reltol,
                 save_everystep=false, save_start=false, save_end=true,
                 verbose=false)
-    return sol.u[end].x
+    return center_positions(sol.u[end].x)
 end
