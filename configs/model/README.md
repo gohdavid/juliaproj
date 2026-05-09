@@ -15,8 +15,16 @@ Important fields:
 - `experiment.name`: output-name component under `runs/`.
 - `model.name`: human-readable model label using the naming convention above.
 - `model.equivariant`: explicit boolean for paper/table bookkeeping.
+- `diffusion.objective`: `score_matching` trains a time-dependent score network
+  with denoising score matching; `denoising` trains the DDPM noise-prediction
+  objective.
 - `data.source_dir` / `data.source_pattern`: HDF5 source selection for polymer
   configs.
+- `training.log_every`: epoch interval for training progress logs; `0` disables
+  epoch logs.
+- `training.checkpoint_every`: epoch interval for parameter checkpoints; `0`
+  disables checkpointing. Checkpoints are written to
+  `<output-dir>/checkpoints/checkpoint_epoch_*.jls` by default.
 
 Run example:
 

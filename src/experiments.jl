@@ -63,6 +63,39 @@ function _output_dir(cfg)
     return path
 end
 
+function _checkpoint_callback(cfg, output_dir::AbstractString)
+    checkpoint_every = cfgint(cfg, "training.checkpoint_every", 0)
+    checkpoint_every > 0 || return nothing
+
+    checkpoint_dir = String(cfgget(cfg, "training.checkpoint_dir",
+                                   joinpath(output_dir, "checkpoints")))
+    keep_all = cfgbool(cfg, "training.keep_all_checkpoints", true)
+    mkpath(checkpoint_dir)
+
+    return function (; epoch, params, opt_state, losses, loss)
+        if epoch % checkpoint_every != 0
+            return nothing
+        end
+
+        checkpoint = Dict(
+            "config" => cfg,
+            "epoch" => epoch,
+            "loss" => loss,
+            "losses" => copy(losses),
+            "params" => DiffEqFlux.Lux.cpu_device()(params),
+        )
+        if keep_all
+            path = joinpath(checkpoint_dir, "checkpoint_epoch_$(lpad(epoch, 6, '0')).jls")
+            serialize(path, checkpoint)
+        else
+            path = joinpath(checkpoint_dir, "latest.jls")
+            serialize(path, checkpoint)
+        end
+        @info "checkpoint saved" epoch path
+        return path
+    end
+end
+
 function _sample_metrics(train_data, samples)
     samples_cpu = DiffEqFlux.Lux.cpu_device()(samples)
     return Dict{String,Float32}(
@@ -72,7 +105,7 @@ end
 
 function _polymer_langevin_score_targets(train_data, data_cfg::NBodyDataConfig)
     data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ||
-        error("force_matching diffusion currently requires polymer_langevin or rouse_hdf5 data")
+        error("score_matching diffusion currently requires polymer_langevin or rouse_hdf5 data")
     p = data_cfg.physics_params
     diffusion = length(p) >= 1 ? p[1] : 1.0f0
     bond_length = length(p) >= 2 ? p[2] : 1.0f0
@@ -213,6 +246,7 @@ function run_nbody_experiment(cfg::Dict{String,Any})
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
+    output_dir = _output_dir(cfg)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -234,6 +268,8 @@ function run_nbody_experiment(cfg::Dict{String,Any})
         epochs=cfgint(cfg, "training.epochs", 10),
         batch_size=cfgint(cfg, "training.batch_size", 64),
         learning_rate=cfgfloat32(cfg, "training.learning_rate", 5f-3),
+        log_every=cfgint(cfg, "training.log_every", 1),
+        checkpoint_callback=_checkpoint_callback(cfg, output_dir),
         rng,
     )
 
@@ -253,7 +289,7 @@ function run_nbody_experiment(cfg::Dict{String,Any})
     end
 
     result = ExperimentResult(cfg, train_data, params, losses, samples,
-                              _output_dir(cfg), metrics)
+                              output_dir, metrics)
     result_path = _save_result(result)
     plot_path = _maybe_plot_result(result)
     @info "experiment complete" output_dir=result.output_dir result_path plot_path metrics
@@ -264,6 +300,7 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any})
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
+    output_dir = _output_dir(cfg)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -288,6 +325,8 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any})
         epochs=cfgint(cfg, "training.epochs", 10),
         batch_size=cfgint(cfg, "training.batch_size", 64),
         learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
+        log_every=cfgint(cfg, "training.log_every", 1),
+        checkpoint_callback=_checkpoint_callback(cfg, output_dir),
         rng,
     )
 
@@ -298,7 +337,7 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any})
     ))
 
     result = FlowMatchingResult(cfg, train_data, params, losses, samples,
-                                _output_dir(cfg), metrics)
+                                output_dir, metrics)
     result_path = _save_result(result)
     plot_path = _maybe_plot_result(result)
     @info "flow matching experiment complete" output_dir=result.output_dir result_path plot_path metrics
@@ -309,6 +348,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
     seed = cfgint(cfg, "experiment.seed", 0)
     rng = Xoshiro(seed)
     device = _device_from_config(cfg)
+    output_dir = _output_dir(cfg)
 
     data_cfg = _data_config(cfg)
     train_data = generate_nbody_dataset(rng, data_cfg)
@@ -328,19 +368,20 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
         cfgfloat32(cfg, "diffusion.beta_end", 2f-2),
     )
     objective = cfgsymbol(cfg, "diffusion.objective", "denoising")
-    langevin_step_size = cfgfloat32(cfg, "sampling.langevin_step_size", 1f-3)
     ctx = NBodyDiffusionContext(model, device, n_steps, betas, alphas, alpha_bars,
-                                objective, langevin_step_size)
+                                objective)
     params = init_diffusion_params(rng, model; device)
-    score_targets = objective == :force_matching ?
+    score_targets = objective == :score_matching &&
+                    data_cfg.kind in (:polymer_langevin, :rouse_hdf5) ?
                     _polymer_langevin_score_targets(train_data, data_cfg) : nothing
 
     params, _, losses = train_diffusion_adam(
         ctx, params, train_data;
-        score_targets,
         epochs=cfgint(cfg, "training.epochs", 10),
         batch_size=cfgint(cfg, "training.batch_size", 64),
         learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
+        log_every=cfgint(cfg, "training.log_every", 1),
+        checkpoint_callback=_checkpoint_callback(cfg, output_dir),
         rng,
     )
 
@@ -354,7 +395,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any})
     end
 
     result = DiffusionResult(cfg, train_data, params, losses, samples,
-                             _output_dir(cfg), metrics)
+                             output_dir, metrics)
     result_path = _save_result(result)
     plot_path = _maybe_plot_result(result)
     @info "diffusion experiment complete" output_dir=result.output_dir result_path plot_path metrics

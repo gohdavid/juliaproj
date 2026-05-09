@@ -76,6 +76,15 @@ include(joinpath(@__DIR__, "..", "src", "BoltzFlow.jl"))
 using .BoltzFlow
 
 const PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
+const OKABE_ITO_BLUE = colorant"#0072B2"
+const OKABE_ITO_VERMILLION = colorant"#D55E00"
+
+function style_axis!(ax)
+    ax.xgridvisible[] = false
+    ax.ygridvisible[] = false
+    hidespines!(ax, :t, :r)
+    return ax
+end
 
 function project_path(path::AbstractString)
     return isabspath(path) ? path : joinpath(PROJECT_ROOT, path)
@@ -209,14 +218,14 @@ function save_chain_frames(traj, times, tau_r, frame_dir)
     for frame in 1:n_frames
         fig = Figure(size=(700, 700), backgroundcolor=:white)
         ax = Axis(fig[1, 1], aspect=DataAspect(),
-                  title=@sprintf("raw Rouse chain, t = %.2fτR", times[frame] / tau_r),
                   xlabel="x", ylabel="y")
+        style_axis!(ax)
         xlims!(ax, xlims...)
         ylims!(ax, ylims...)
         pts = chain_points(traj[:, :, frame])
         lines!(ax, pts, color=:gray20, linewidth=4)
         scatter!(ax, pts, color=1:n_beads, colormap=:viridis,
-                 markersize=10, strokewidth=0)
+                 markersize=16, strokewidth=0)
         save(joinpath(frame_dir, @sprintf("frame_%05d.png", frame)), fig)
     end
     return frame_dir
@@ -227,8 +236,8 @@ function record_gif(traj, times, tau_r, gif_path; framerate=24)
     n_beads = size(traj, 2)
     frame_ids = collect(axes(traj, 3))
     fig = Figure(size=(700, 700), backgroundcolor=:white)
-    ax = Axis(fig[1, 1], aspect=DataAspect(), xlabel="x", ylabel="y",
-              title="raw 2D Rouse chain")
+    ax = Axis(fig[1, 1], aspect=DataAspect(), xlabel="x", ylabel="y")
+    style_axis!(ax)
     xlims!(ax, xlims...)
     ylims!(ax, ylims...)
 
@@ -237,7 +246,7 @@ function record_gif(traj, times, tau_r, gif_path; framerate=24)
         pts = chain_points(traj[:, :, frame])
         lines!(ax, pts, color=:gray20, linewidth=4)
         scatter!(ax, pts, color=1:n_beads, colormap=:viridis,
-                 markersize=10, strokewidth=0)
+                 markersize=16, strokewidth=0)
         text!(ax, xlims[1] + 0.04 * (xlims[2] - xlims[1]),
               ylims[2] - 0.06 * (ylims[2] - ylims[1]),
               text=@sprintf("t = %.2fτR", times[frame] / tau_r), fontsize=24)
@@ -268,10 +277,10 @@ function plot_potential_histogram(potentials, expected_u, dof, se_independent,
     fig = Figure(size=(950, 650), backgroundcolor=:white)
     ax = Axis(fig[1, 1],
               xlabel="U(X)",
-              ylabel="probability density",
-              title="Rouse-chain Gaussian potential from raw long-interval samples")
+              ylabel="probability density")
+    style_axis!(ax)
     hist!(ax, potentials; bins=36, normalization=:pdf,
-          color=(:teal, 0.55), strokewidth=1,
+          color=(OKABE_ITO_BLUE, 0.55), strokewidth=1,
           strokecolor=:white)
     if ideal_reference
         lines!(ax, xs, ys, color=:black, linewidth=4,
@@ -279,7 +288,8 @@ function plot_potential_histogram(potentials, expected_u, dof, se_independent,
         vlines!(ax, [expected_u], color=:black, linestyle=:dash, linewidth=4,
                 label=@sprintf("analytic E[U] = %.2f", expected_u))
     end
-    vlines!(ax, [mean(potentials)], color=:tomato, linewidth=4,
+    vlines!(ax, [mean(potentials)], color=OKABE_ITO_VERMILLION,
+            linestyle=:dash, linewidth=4,
             label=@sprintf("sample mean = %.2f", mean(potentials)))
     axislegend(ax, position=:rt)
     if ideal_reference
@@ -320,10 +330,10 @@ function plot_score_norm2_histogram(score_norm2, xs, analytic_density,
     fig = Figure(size=(950, 650), backgroundcolor=:white)
     ax = Axis(fig[1, 1],
               xlabel="||score(X)||²",
-              ylabel="probability density",
-              title="Rouse-chain analytic score-norm distribution")
+              ylabel="probability density")
+    style_axis!(ax)
     hist!(ax, score_norm2; bins=sim_edges, normalization=:pdf,
-          color=(:steelblue, 0.55), strokewidth=1,
+          color=(OKABE_ITO_BLUE, 0.55), strokewidth=1,
           strokecolor=:white, label="simulation")
     if ideal_reference
         lines!(ax, xs, analytic_density, color=:black, linewidth=4,
@@ -331,7 +341,8 @@ function plot_score_norm2_histogram(score_norm2, xs, analytic_density,
         vlines!(ax, [expected_norm2], color=:black, linestyle=:dash, linewidth=4,
                 label=@sprintf("analytic E[||score||²] = %.2f", expected_norm2))
     end
-    vlines!(ax, [mean(score_norm2)], color=:tomato, linewidth=4,
+    vlines!(ax, [mean(score_norm2)], color=OKABE_ITO_VERMILLION,
+            linestyle=:dash, linewidth=4,
             label=@sprintf("sample mean = %.2f", mean(score_norm2)))
     axislegend(ax, position=:rt)
     save(out_path, fig)

@@ -180,7 +180,7 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     dx = reshape(dx, dim, n_atoms, batch_size)
 
     trace_terms = w_ij .+ 2.0f0 .* r_ij.^2 .* dw_ij
-    trace_sum = sum(trace_terms, dims=(1, 2, 3)) ./ Float32(n_atoms)
+    trace_sum = sum(trace_terms; dims=(1, 2, 3)) ./ Float32(n_atoms)
     dlogp = -reshape(trace_sum, 1, batch_size)
     return ComponentArray(x=dx, logp=dlogp)
 end
@@ -255,6 +255,8 @@ end
 function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
                         epochs::Int=25, batch_size::Int=64,
                         learning_rate::Real=1f-3,
+                        log_every::Int=1,
+                        checkpoint_callback=nothing,
                         rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
@@ -280,7 +282,19 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
             epoch_loss += loss_f32 * local_batch_size
             push!(loss_history, loss_f32)
         end
-        @info "training" epoch loss=(epoch_loss / n_samples)
+        mean_loss = Float32(epoch_loss / n_samples)
+        if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
+            @info "training" epoch loss=mean_loss
+        end
+        if checkpoint_callback !== nothing
+            checkpoint_callback(;
+                epoch,
+                params,
+                opt_state,
+                losses=loss_history,
+                loss=mean_loss,
+            )
+        end
     end
 
     return params, opt_state, loss_history

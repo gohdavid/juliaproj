@@ -103,6 +103,8 @@ end
 function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_data;
                                   epochs::Int=25, batch_size::Int=64,
                                   learning_rate::Real=1f-3,
+                                  log_every::Int=1,
+                                  checkpoint_callback=nothing,
                                   rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
     opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
@@ -129,7 +131,19 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
             epoch_loss += loss_f32 * local_batch_size
             push!(loss_history, loss_f32)
         end
-        @info "flow_matching_training" epoch loss=(epoch_loss / n_samples)
+        mean_loss = Float32(epoch_loss / n_samples)
+        if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
+            @info "flow_matching_training" epoch loss=mean_loss
+        end
+        if checkpoint_callback !== nothing
+            checkpoint_callback(;
+                epoch,
+                params,
+                opt_state,
+                losses=loss_history,
+                loss=mean_loss,
+            )
+        end
     end
 
     return params, opt_state, loss_history

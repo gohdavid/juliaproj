@@ -30,12 +30,13 @@ nonideal:
     centered: false
 
 solver:
-  dt: 0.01
+  algorithm: SOSRA
+  dt: 0.001
 
 save:
   burn_in_tau: 0.0
   until_tau: 5.0
-  interval_tau: 0.05
+  interval_tau: 0.01
   write_hdf5: true
   write_jls: false
 

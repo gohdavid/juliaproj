@@ -21,6 +21,7 @@ model:
   hidden_dims: [64, 64, 64]
 
 diffusion:
+  objective: score_matching
   steps: 100
   beta_start: 1.0e-4
   beta_end: 2.0e-2
@@ -29,6 +30,8 @@ training:
   epochs: 30
   batch_size: 64
   learning_rate: 1.0e-3
+  log_every: 1
+  checkpoint_every: 5
 
 sampling:
   n_samples: 1000

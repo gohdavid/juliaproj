@@ -16,3 +16,5 @@ unless noted.
 
 Generated data should go under `outputs/`, `runs/`, or configured paths, not in
 this folder.
+
+Maintained analysis figures should follow the repo plot rules in `STYLE.md`.

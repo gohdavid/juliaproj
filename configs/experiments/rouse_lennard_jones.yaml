@@ -1,5 +1,11 @@
 seed: 21
 
+parallel:
+  workers: 16
+  seed_stride: 1
+  julia_num_threads: 1
+  log_dir: logs/rouse_lennard_jones
+
 rouse:
   dim: 2
   n_beads: 32
@@ -35,7 +41,7 @@ solver:
 
 save:
   burn_in_tau: 20.0
-  until_tau: 200.0
+  until_tau: 2498.0
   interval_tau: 2.0
   write_hdf5: true
   write_jls: false
@@ -44,4 +50,4 @@ output:
   dir: outputs
   experiment_name: rouse_lennard_jones
   file: rouse_analysis.jls
-  hdf5_file: trajectories/rouse_analysis.h5
+  hdf5_file: trajectories/rouse_lennard_jones.h5

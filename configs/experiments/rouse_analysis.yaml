@@ -1,10 +1,10 @@
 seed: 0
 
 parallel:
-  workers: 32
+  workers: 16
   seed_stride: 1
   julia_num_threads: 1
-  log_dir: logs
+  log_dir: logs/rouse_analysis
 
 logging:
   progress: true
@@ -45,13 +45,13 @@ solver:
 
 save:
   burn_in_tau: 20.0
-  until_tau: 10000.0
+  until_tau: 2498.0
   interval_tau: 2.0
   write_hdf5: true
   write_jls: false
 
 output:
   dir: outputs
-  experiment_name: rouse_analysis
-  file: rouse_analysis.jls
-  hdf5_file: trajectories/rouse_analysis.h5
+  experiment_name: rouse_base
+  file: rouse_base.jls
+  hdf5_file: trajectories/rouse_base.h5

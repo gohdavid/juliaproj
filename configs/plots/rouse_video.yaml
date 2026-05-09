@@ -1,13 +1,16 @@
 experiment:
   config: configs/experiments/rouse_video.yaml
 
+data:
+  prefer_hdf5: true
+
 analysis:
   video: true
   potential: false
   score: false
 
 video:
-  framerate: 24
+  framerate: 60
 
 output:
   dir: outputs
