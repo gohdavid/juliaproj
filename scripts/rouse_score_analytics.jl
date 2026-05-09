@@ -362,7 +362,7 @@ function experiment_output_paths_and_dir(plot_cfg)
     output_dir = cfgget(exp_cfg, "output.dir", nothing)
     if output_dir !== nothing
         legacy_output = cfgget(exp_cfg, "output.path", nothing)
-        default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
+        default_file = legacy_output === nothing ? "traj.jls" : basename(String(legacy_output))
         output_file = String(cfgget(exp_cfg, "output.file", default_file))
         prefer_hdf5 = cfgbool(plot_cfg, "data.prefer_hdf5", false)
         output_hdf5_file = String(cfgget(exp_cfg, "output.hdf5_file",
@@ -379,7 +379,7 @@ function experiment_output_paths_and_dir(plot_cfg)
         end
         return [joinpath(data_dir, selected_file)], data_dir
     end
-    data_path = project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/rouse.jls")))
+    data_path = project_path(String(cfgget(exp_cfg, "output.path", "outputs/rouse_raw/traj.jls")))
     return [data_path], dirname(data_path)
 end
 

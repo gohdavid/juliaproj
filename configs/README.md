@@ -45,6 +45,6 @@ The same configs can also train from precomputed Rouse HDF5 snapshots by using
 concatenates frames across files, and samples `data.n_samples` equilibrium
 conformations from the combined ensemble. Use `data.source_dir` plus
 `data.source_pattern` for seed-split outputs such as
-`outputs/rouse_analysis/<run-hash>/trajectories` with
-`rouse_analysis_seed*.h5`, or provide `data.source_path` /
+`outputs/rouse_base/<run-hash>/trajectories` with
+`traj_seed*.h5`, or provide `data.source_path` /
 `data.source_paths` for explicit files.

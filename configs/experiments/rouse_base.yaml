@@ -4,7 +4,7 @@ parallel:
   workers: 16
   seed_stride: 1
   julia_num_threads: 1
-  log_dir: logs/rouse_analysis
+  log_dir: logs/rouse_base
 
 logging:
   progress: true
@@ -53,5 +53,5 @@ save:
 output:
   dir: outputs
   experiment_name: rouse_base
-  file: rouse_base.jls
-  hdf5_file: trajectories/rouse_base.h5
+  file: traj.jls
+  hdf5_file: trajectories/traj.h5

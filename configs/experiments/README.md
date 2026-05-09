@@ -1,7 +1,7 @@
 Raw Rouse/polymer trajectory-generation configs for
 `scripts/simulate_rouse_raw.jl`.
 
-- `rouse_analysis.yaml`: long 32-worker baseline Rouse run used by polymer model
+- `rouse_base.yaml`: long 16-worker baseline Rouse run used by polymer model
   configs.
 - `rouse_video.yaml`: short trajectory for visual checks.
 - `rouse_*nonideal*.yaml`, `rouse_confinement.yaml`,

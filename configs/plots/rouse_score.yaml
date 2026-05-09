@@ -1,5 +1,5 @@
 experiment:
-  config: configs/experiments/rouse_analysis.yaml
+  config: configs/experiments/rouse_base.yaml
 
 data:
   prefer_hdf5: true
@@ -15,5 +15,5 @@ score:
 
 output:
   dir: outputs
-  experiment_name: rouse_analysis
-  score_file: rouse_analysis_score_norm2_histogram.png
+  experiment_name: rouse_base
+  score_file: rouse_base_score_norm2_histogram.png

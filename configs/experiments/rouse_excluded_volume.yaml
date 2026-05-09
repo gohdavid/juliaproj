@@ -49,5 +49,5 @@ save:
 output:
   dir: outputs
   experiment_name: rouse_excluded_volume
-  file: rouse_analysis.jls
-  hdf5_file: trajectories/rouse_excluded_volume.h5
+  file: traj.jls
+  hdf5_file: trajectories/traj.h5

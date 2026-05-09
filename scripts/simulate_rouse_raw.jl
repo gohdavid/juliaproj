@@ -25,7 +25,7 @@ The slowest Rouse relaxation time is
 Usage:
 
     julia --project=. scripts/simulate_rouse_raw.jl configs/rouse_video.yaml
-    julia --project=. scripts/simulate_rouse_raw.jl configs/rouse_analysis.yaml
+    julia --project=. scripts/simulate_rouse_raw.jl configs/experiments/rouse_base.yaml
 """
 
 import Pkg
@@ -74,7 +74,7 @@ function output_paths(raw_cfg)
 
     if output_dir !== nothing
         out_dir = project_path(BoltzFlow.config_output_dir(raw_cfg; default_name="rouse_raw"))
-        default_file = legacy_output === nothing ? "rouse.jls" : basename(String(legacy_output))
+        default_file = legacy_output === nothing ? "traj.jls" : basename(String(legacy_output))
         output_file = String(BoltzFlow.cfgget(raw_cfg, "output.file", default_file))
         output_path = joinpath(out_dir, output_file)
 
@@ -86,7 +86,7 @@ function output_paths(raw_cfg)
     end
 
     output_path = project_path(String(BoltzFlow.cfgget(raw_cfg, "output.path",
-                                                       "outputs/rouse_raw/rouse.jls")))
+                                                       "outputs/rouse_raw/traj.jls")))
     hdf5_path = project_path(String(BoltzFlow.cfgget(raw_cfg, "output.hdf5_path",
                                                      frame_hdf5_path(output_path))))
     return output_path, hdf5_path
@@ -113,7 +113,7 @@ end
 function worker_config(raw_cfg, worker_id::Int)
     cfg = deepcopy(raw_cfg)
     seed = worker_seed(raw_cfg, worker_id)
-    output_file = String(BoltzFlow.cfgget(cfg, "output.file", "rouse.jls"))
+    output_file = String(BoltzFlow.cfgget(cfg, "output.file", "traj.jls"))
     hdf5_file = String(BoltzFlow.cfgget(cfg, "output.hdf5_file",
                                         seed_filename(frame_hdf5_path(output_file), seed)))
     cfgset!(cfg, "output.file", seed_filename(output_file, seed))
@@ -149,7 +149,8 @@ function run_parallel_parent(cfg_path::AbstractString, raw_cfg, n_workers::Int)
     procs = []
     for worker_id in 1:n_workers
         seed = worker_seed(raw_cfg, worker_id)
-        log_path = joinpath(log_dir, "rouse_analysis_seed$(seed).log")
+        experiment_name = String(BoltzFlow.cfgget(raw_cfg, "output.experiment_name", "rouse_raw"))
+        log_path = joinpath(log_dir, "$(experiment_name)_seed$(seed).log")
         cmd = `$(Base.julia_cmd()) --project=$(PROJECT_ROOT) $script_path $cfg_path --worker-id=$worker_id`
         env = copy(ENV)
         env["JULIA_NUM_THREADS"] = child_threads

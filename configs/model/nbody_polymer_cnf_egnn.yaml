@@ -12,8 +12,8 @@ data:
   n_atoms: 32
   n_samples: 4000
   burn_in: 0
-  source_dir: outputs/rouse_analysis/0002d3c7b983/trajectories
-  source_pattern: rouse_analysis_seed*.h5
+  source_dir: outputs/rouse_base/06e62489765b/trajectories
+  source_pattern: traj_seed*.h5
   allow_partial: false
   physics_params: [1.0, 1.0, 3.0]
   center: true

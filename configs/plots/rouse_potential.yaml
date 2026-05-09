@@ -1,5 +1,5 @@
 experiment:
-  config: configs/experiments/rouse_analysis.yaml
+  config: configs/experiments/rouse_base.yaml
 
 data:
   prefer_hdf5: true
@@ -11,5 +11,5 @@ analysis:
 
 output:
   dir: outputs
-  experiment_name: rouse_analysis
-  histogram_file: rouse_analysis_potential_histogram.png
+  experiment_name: rouse_base
+  histogram_file: rouse_base_potential_histogram.png
