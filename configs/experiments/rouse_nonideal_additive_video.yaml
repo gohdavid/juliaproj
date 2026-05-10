@@ -1,5 +1,11 @@
 seed: 24
 
+parallel:
+  workers: 16
+  seed_stride: 1
+  julia_num_threads: 1
+  log_dir: logs/rouse_nonideal_additive_video
+
 rouse:
   dim: 2
   n_beads: 32

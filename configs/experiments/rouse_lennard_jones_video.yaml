@@ -1,5 +1,11 @@
 seed: 21
 
+parallel:
+  workers: 16
+  seed_stride: 1
+  julia_num_threads: 1
+  log_dir: logs/rouse_lennard_jones_video
+
 rouse:
   dim: 2
   n_beads: 32

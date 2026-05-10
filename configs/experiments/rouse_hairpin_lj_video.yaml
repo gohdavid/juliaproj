@@ -1,5 +1,11 @@
 seed: 25
 
+parallel:
+  workers: 16
+  seed_stride: 1
+  julia_num_threads: 1
+  log_dir: logs/rouse_hairpin_lj_video
+
 rouse:
   dim: 2
   n_beads: 32
