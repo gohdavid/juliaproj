@@ -1,6 +1,6 @@
 experiment:
   family: nbody_cnf
-  name: nbody_polymer_cnf_egnn_rouse_hdf5
+  name: nbody_polymer_excluded_volume_cnf_egnn_rouse_hdf5
   seed: 0
 
 runtime:
@@ -12,10 +12,10 @@ data:
   n_atoms: 32
   n_samples: 16000
   burn_in: 0
-  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/f2e45fc694d2/trajectories
+  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_excluded_volume/66d019d34125/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
-  physics_params: [1.0, 1.0, 3.0]
+  physics_params: [1.0, 1.0, 3.0, 0.0, 0.05, 1.0, 0.4, 2.5, 1.0, 1.0, 1.0, 0.03, 1.0, 0.3, 12.0, 1.5, 1.0, 0.0, 0.001, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 4.0, 0.0, 1.0, 0.0]
   center: true
 
 model:

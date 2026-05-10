@@ -105,6 +105,7 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
                                   learning_rate::Real=1f-3,
                                   log_every::Int=1,
                                   checkpoint_callback=nothing,
+                                  loss_callback=nothing,
                                   rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
     steps_per_epoch = cld(n_samples, batch_size)
@@ -134,10 +135,23 @@ function train_flow_matching_adam(ctx::NBodyFlowMatchingContext, params, train_d
                 error("Non-finite flow-matching loss at epoch=$epoch batch=$batch_num: $loss_f32")
             epoch_loss += loss_f32 * local_batch_size
             push!(loss_history, loss_f32)
+            if loss_callback !== nothing
+                loss_callback(;
+                    epoch,
+                    batch=batch_num,
+                    step,
+                    total_steps,
+                    loss=loss_f32,
+                )
+            end
+
+            if log_every > 0 && (step == total_steps || step % log_every == 0)
+                @info "flow_matching_training" epoch batch=batch_num step total_steps steps_per_epoch loss=loss_f32
+            end
         end
         mean_loss = Float32(epoch_loss / n_samples)
-        if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
-            @info "flow_matching_training" epoch step total_steps steps_per_epoch loss=mean_loss
+        if log_every > 0 && (step == total_steps || step % log_every == 0)
+            @info "flow_matching_training_epoch" epoch step total_steps steps_per_epoch loss=mean_loss
         end
         if checkpoint_callback !== nothing
             checkpoint_callback(;

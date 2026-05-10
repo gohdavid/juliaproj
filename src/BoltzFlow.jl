@@ -1,7 +1,7 @@
 """Rouse-chain and n-body generative modeling utilities."""
 module BoltzFlow
 
-using LinearAlgebra, Random, Statistics
+using LinearAlgebra, Logging, Random, Statistics
 using OrdinaryDiffEq
 using StochasticDiffEq
 using ComponentArrays
@@ -13,7 +13,7 @@ get!(ENV, "GKSwstype", "100")
 using Plots
 using HDF5
 
-export load_yaml_config, run_experiment, run_nbody_experiment
+export load_yaml_config, run_experiment, run_inference, run_nbody_experiment
 export run_nbody_flow_matching_experiment, run_nbody_diffusion_experiment
 export NBodyDataConfig, generate_nbody_dataset, sample_training_batch
 export MLPVectorField, EGNNVectorField, NBodyCNFContext
@@ -35,5 +35,6 @@ include("nbody_cnf.jl")
 include("nbody_flow_matching.jl")
 include("nbody_diffusion.jl")
 include("experiments.jl")
+include("inference.jl")
 
 end # module BoltzFlow

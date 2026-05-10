@@ -111,11 +111,28 @@ function safe_lj_init(rng::AbstractRNG, dim::Int, n_atoms::Int, min_dist::Real)
     return x
 end
 
+function _notebook_checkmark_base(::Type{T}=Float32) where {T}
+    return T[
+        0.0  0.5  1.0  1.5  2.0  2.5  3.0  3.5  4.0  4.5;
+        2.0  1.0  0.0  0.5  1.0  1.5  2.0  2.5  3.0  3.5
+    ]
+end
+
+function generate_checkmark_synthetic_dataset(rng::AbstractRNG, cfg::NBodyDataConfig)
+    cfg.dim == 2 || error("checkmark_synthetic data is implemented for dim=2.")
+    cfg.n_atoms == 10 || error("checkmark_synthetic data follows the notebook and requires n_atoms=10.")
+    base = reshape(_notebook_checkmark_base(Float32), cfg.dim, cfg.n_atoms, 1)
+    noise = randn(rng, Float32, cfg.dim, cfg.n_atoms, cfg.n_samples) .* cfg.noise_std
+    return base .+ noise
+end
+
 function generate_static_asymmetric_dataset(rng::AbstractRNG, cfg::NBodyDataConfig)
     cfg.dim == 2 || error("static_asymmetric data is implemented for dim=2.")
+    if cfg.n_atoms == 10
+        return generate_checkmark_synthetic_dataset(rng, cfg)
+    end
     x_coords = Float32.(range(0, step=0.5, length=cfg.n_atoms))
-    y_coords = cfg.n_atoms == 10 ?
-        Float32[2.0, 1.0, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5] :
+    y_coords =
         Float32.(range(0, stop=3.5, length=cfg.n_atoms))
     base = reshape(vcat(reshape(x_coords, 1, :), reshape(y_coords, 1, :)),
                    cfg.dim, cfg.n_atoms, 1)
@@ -199,6 +216,63 @@ function init_polymer_chain(rng::AbstractRNG, dim::Int, n_atoms::Int, bond_std::
     return center_frame(x)
 end
 
+function init_hairpin_polymer_chain(rng::AbstractRNG, dim::Int, n_atoms::Int,
+                                    bond_length::Real, separation::Real,
+                                    noise_std::Real)
+    dim == 2 || error("hairpin polymer initialization is implemented for dim=2.")
+    iseven(n_atoms) || error("hairpin polymer initialization requires an even bead count.")
+    half = div(n_atoms, 2)
+    x = zeros(Float64, dim, n_atoms)
+    sep = Float64(separation)
+    step = Float64(bond_length)
+    for i in 1:half
+        x[1, i] = (i - 1) * step
+        x[2, i] = 0.5 * sep
+    end
+    for i in (half + 1):n_atoms
+        partner = n_atoms + 1 - i
+        x[1, i] = (partner - 1) * step
+        x[2, i] = -0.5 * sep
+    end
+    if noise_std > 0
+        x .+= Float64(noise_std) .* randn(rng, Float64, dim, n_atoms)
+    end
+    return center_frame(x)
+end
+
+function init_ring_polymer_chain(rng::AbstractRNG, dim::Int, n_atoms::Int,
+                                 bond_length::Real, noise_std::Real)
+    dim == 2 || error("ring polymer initialization is implemented for dim=2.")
+    n_atoms >= 3 || error("ring polymer initialization requires at least 3 beads.")
+    x = zeros(Float64, dim, n_atoms)
+    radius = Float64(bond_length) / (2.0 * sin(pi / Float64(n_atoms)))
+    for i in 1:n_atoms
+        theta = 2.0 * pi * Float64(i - 1) / Float64(n_atoms)
+        x[1, i] = radius * cos(theta)
+        x[2, i] = radius * sin(theta)
+    end
+    if noise_std > 0
+        x .+= Float64(noise_std) .* randn(rng, Float64, dim, n_atoms)
+    end
+    return center_frame(x)
+end
+
+function _polymer_initial_state(rng::AbstractRNG, cfg::NBodyDataConfig,
+                                bond_length::Real, p)
+    init_mode = length(p) >= 28 ? Int(round(p[28])) : 0
+    if init_mode == 1
+        separation = length(p) >= 29 ? p[29] : bond_length
+        noise_std = length(p) >= 30 ? p[30] : 0.0
+        return init_hairpin_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length,
+                                          separation, noise_std)
+    elseif init_mode == 2
+        noise_std = length(p) >= 30 ? p[30] : 0.0
+        return init_ring_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length,
+                                       noise_std)
+    end
+    return init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length)
+end
+
 const POLYMER_NONIDEAL_OFFSET = 4
 
 function _polymer_nonideal_params(p)
@@ -220,6 +294,19 @@ function _polymer_nonideal_params(p)
         conf_enabled = length(p) >= 18 && p[18] > 0.5f0,
         conf_strength = length(p) >= 19 ? p[19] : 0.0f0,
         conf_centered = length(p) >= 20 ? p[20] > 0.5f0 : true,
+        hairpin_lj_enabled = length(p) >= 21 && p[21] > 0.5f0,
+        hairpin_lj_epsilon = length(p) >= 22 ? p[22] : 0.0f0,
+        hairpin_lj_sigma = length(p) >= 23 ? p[23] : 1.0f0,
+        hairpin_lj_softening = length(p) >= 24 ? p[24] : 0.0f0,
+        hairpin_lj_cutoff = length(p) >= 25 ? p[25] : 0.0f0,
+        hairpin_lj_shift = length(p) >= 26 ? p[26] > 0.5f0 : true,
+        hairpin_lj_min_separation = length(p) >= 27 ? Int(round(p[27])) : 4,
+        ring_lj_enabled = length(p) >= 31 && p[31] > 0.5f0,
+        ring_lj_epsilon = length(p) >= 32 ? p[32] : 0.0f0,
+        ring_lj_sigma = length(p) >= 33 ? p[33] : 1.0f0,
+        ring_lj_softening = length(p) >= 34 ? p[34] : 0.0f0,
+        ring_lj_cutoff = length(p) >= 35 ? p[35] : 0.0f0,
+        ring_lj_shift = length(p) >= 36 ? p[36] > 0.5f0 : true,
     )
 end
 
@@ -232,6 +319,14 @@ end
 
 function _skip_bonded(i::Int, j::Int, exclude_bonded::Bool)
     return exclude_bonded && abs(i - j) == 1
+end
+
+function _hairpin_contact(i::Int, j::Int, n_atoms::Int, min_separation::Int)
+    return i + j == n_atoms + 1 && abs(i - j) >= min_separation
+end
+
+function _ring_contact(i::Int, j::Int, n_atoms::Int)
+    return i == 1 && j == n_atoms
 end
 
 function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
@@ -277,6 +372,30 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
             sigma_power = nonideal.ev_sigma^power
             r_power_plus2 = r2^((power + 2.0) / 2.0)
             coeff += nonideal.ev_epsilon * power * sigma_power / r_power_plus2
+        end
+
+        if nonideal.hairpin_lj_enabled &&
+           _hairpin_contact(i, j, n_atoms, nonideal.hairpin_lj_min_separation) &&
+           _within_cutoff(raw_r2, nonideal.hairpin_lj_cutoff)
+            r2 = max(raw_r2 + nonideal.hairpin_lj_softening^2, min_r2)
+            inv_r2 = 1.0f0 / r2
+            sig2_over_r2 = (nonideal.hairpin_lj_sigma * nonideal.hairpin_lj_sigma) * inv_r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            coeff += 24.0 * nonideal.hairpin_lj_epsilon * inv_r2 *
+                     (2.0 * sr12 - sr6)
+        end
+
+        if nonideal.ring_lj_enabled &&
+           _ring_contact(i, j, n_atoms) &&
+           _within_cutoff(raw_r2, nonideal.ring_lj_cutoff)
+            r2 = max(raw_r2 + nonideal.ring_lj_softening^2, min_r2)
+            inv_r2 = 1.0f0 / r2
+            sig2_over_r2 = (nonideal.ring_lj_sigma * nonideal.ring_lj_sigma) * inv_r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            coeff += 24.0 * nonideal.ring_lj_epsilon * inv_r2 *
+                     (2.0 * sr12 - sr6)
         end
 
         if coeff != 0.0
@@ -360,6 +479,38 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
             r = sqrt(r2)
             u += nonideal.ev_epsilon * (nonideal.ev_sigma / r)^nonideal.ev_power
         end
+
+        if nonideal.hairpin_lj_enabled &&
+           _hairpin_contact(i, j, n_atoms, nonideal.hairpin_lj_min_separation) &&
+           _within_cutoff(raw_r2, nonideal.hairpin_lj_cutoff)
+            r2 = max(raw_r2 + nonideal.hairpin_lj_softening^2, min_r2)
+            sig2_over_r2 = (nonideal.hairpin_lj_sigma * nonideal.hairpin_lj_sigma) / r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            val = 4.0 * nonideal.hairpin_lj_epsilon * (sr12 - sr6)
+            if nonideal.hairpin_lj_shift && nonideal.hairpin_lj_cutoff > 0.0
+                src2 = (nonideal.hairpin_lj_sigma / nonideal.hairpin_lj_cutoff)^2
+                src6 = src2^3
+                val -= 4.0 * nonideal.hairpin_lj_epsilon * (src6^2 - src6)
+            end
+            u += val
+        end
+
+        if nonideal.ring_lj_enabled &&
+           _ring_contact(i, j, n_atoms) &&
+           _within_cutoff(raw_r2, nonideal.ring_lj_cutoff)
+            r2 = max(raw_r2 + nonideal.ring_lj_softening^2, min_r2)
+            sig2_over_r2 = (nonideal.ring_lj_sigma * nonideal.ring_lj_sigma) / r2
+            sr6 = sig2_over_r2^3
+            sr12 = sr6 * sr6
+            val = 4.0 * nonideal.ring_lj_epsilon * (sr12 - sr6)
+            if nonideal.ring_lj_shift && nonideal.ring_lj_cutoff > 0.0
+                src2 = (nonideal.ring_lj_sigma / nonideal.ring_lj_cutoff)^2
+                src6 = src2^3
+                val -= 4.0 * nonideal.ring_lj_epsilon * (src6^2 - src6)
+            end
+            u += val
+        end
     end
 
     if nonideal.conf_enabled
@@ -390,7 +541,7 @@ function run_polymer_langevin_simulation(rng::AbstractRNG, cfg::NBodyDataConfig)
     k_over_xi = length(p) >= 3 ? p[3] : 3.0 * diffusion / bond_length^2
     nonideal = _polymer_nonideal_params(p)
 
-    x = init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length)
+    x = _polymer_initial_state(rng, cfg, bond_length, p)
     force = similar(x)
     trajectory = zeros(Float64, cfg.dim, cfg.n_atoms, cfg.total_steps)
     noise_scale = sqrt(2.0 * diffusion * cfg.dt)
@@ -412,7 +563,7 @@ function polymer_langevin_sde_problem(rng::AbstractRNG, cfg::NBodyDataConfig)
     k_over_xi = length(p) >= 3 ? p[3] : 3.0 * diffusion / bond_length^2
     nonideal = _polymer_nonideal_params(p)
 
-    x0 = vec(init_polymer_chain(rng, cfg.dim, cfg.n_atoms, bond_length))
+    x0 = vec(_polymer_initial_state(rng, cfg, bond_length, p))
     drift = zeros(Float64, cfg.dim, cfg.n_atoms)
     function f!(du, u, params, t)
         x = reshape(u, cfg.dim, cfg.n_atoms)
@@ -479,6 +630,8 @@ end
 function generate_nbody_dataset(rng::AbstractRNG, cfg::NBodyDataConfig)
     if cfg.kind == :static_asymmetric
         return generate_static_asymmetric_dataset(rng, cfg)
+    elseif cfg.kind in (:checkmark_synthetic, :checkmark, :check_mark)
+        return generate_checkmark_synthetic_dataset(rng, cfg)
     elseif cfg.kind == :polymer_langevin
         trajectory = run_polymer_langevin_sde_simulation(rng, cfg; center=true)
         return sample_training_batch(rng, trajectory; batch_size=cfg.n_samples,

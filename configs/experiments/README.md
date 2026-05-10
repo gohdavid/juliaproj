@@ -6,8 +6,12 @@ Raw Rouse/polymer trajectory-generation configs for
 - `rouse_base_video.yaml`: short baseline trajectory for visual checks.
 - `rouse_*_video.yaml`: short trajectory variants for visual checks.
 - `rouse_*nonideal*.yaml`, `rouse_confinement.yaml`,
-  `rouse_excluded_volume.yaml`, `rouse_lennard_jones.yaml`: variants with
-  nonideal-force terms enabled or staged.
+  `rouse_excluded_volume.yaml`, `rouse_lennard_jones.yaml`,
+  `rouse_hairpin_lj.yaml`: variants with nonideal-force terms enabled or
+  staged. The hairpin LJ variant adds strong attractive native contacts between
+  mirrored bead pairs to make a more protein-like stable folded ensemble.
+- `rouse_ring_lj.yaml`: ring-initialized chain with strong end-to-end
+  attraction, excluded volume, and stronger centered confinement.
 
 Output policy:
 

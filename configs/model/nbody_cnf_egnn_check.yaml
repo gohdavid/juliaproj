@@ -1,28 +1,24 @@
 experiment:
   family: nbody_cnf
-  name: nbody_cnf_egnn_rouse_hdf5
+  name: nbody_cnf_egnn_check
   seed: 0
 
 runtime:
   use_gpu: true
 
 data:
-  kind: rouse_hdf5
+  kind: checkmark_synthetic
   dim: 2
-  n_atoms: 32
-  n_samples: 0
+  n_atoms: 10
+  n_samples: 4000
   burn_in: 0
-  source_dir: outputs/rouse_base/f39c9ddd841f/trajectories
-  source_pattern: traj_seed*.h5
-  allow_partial: false
-  physics_params: [1.0, 1.0, 3.0]
-  center: true
+  noise_std: 0.1
 
 model:
   name: cnf_egnn
   kind: egnn
   equivariant: true
-  hidden_dims: [128, 128, 128]
+  hidden_dims: [32, 32, 32]
   trace: exact
 
 ode:

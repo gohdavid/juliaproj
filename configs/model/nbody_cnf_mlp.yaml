@@ -28,10 +28,10 @@ ode:
   reltol: 1.0e-5
 
 training:
-  epochs: 10
+  epochs: 60
   batch_size: 64
-  learning_rate: 5.0e-3
-  log_every: 1
+  learning_rate: 5.0e-5
+  log_every: 16
   checkpoint_every: 5
 
 sampling:

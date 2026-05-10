@@ -30,6 +30,47 @@ struct NBodyCNFContext
     trace_mode::Symbol
 end
 
+mutable struct CNFSolveStats
+    rhs_calls::Base.RefValue{Int}
+    forward_rhs_calls::Base.RefValue{Int}
+    forward_nf::Base.RefValue{Int}
+    forward_naccept::Base.RefValue{Int}
+    forward_nreject::Base.RefValue{Int}
+end
+
+CNFSolveStats() = CNFSolveStats(Ref(0), Ref(0), Ref(0), Ref(0), Ref(0))
+
+function _reset!(stats::CNFSolveStats)
+    stats.rhs_calls[] = 0
+    stats.forward_rhs_calls[] = 0
+    stats.forward_nf[] = 0
+    stats.forward_naccept[] = 0
+    stats.forward_nreject[] = 0
+    return stats
+end
+
+function _count_rhs!(stats)
+    stats === nothing && return nothing
+    Zygote.ignore() do
+        stats.rhs_calls[] += 1
+    end
+    return nothing
+end
+
+function _record_forward_stats!(stats, sol)
+    stats === nothing && return nothing
+    Zygote.ignore() do
+        stats.forward_rhs_calls[] = stats.rhs_calls[]
+        stats.forward_nf[] = Int(sol.destats.nf)
+        stats.forward_naccept[] = Int(sol.destats.naccept)
+        stats.forward_nreject[] = Int(sol.destats.nreject)
+    end
+    return nothing
+end
+
+_backprop_rhs_calls(stats::CNFSolveStats) =
+    max(stats.rhs_calls[] - stats.forward_rhs_calls[], 0)
+
 function _dense_chain(input_dim::Int, output_dim::Int, hidden_dims::Vector{Int}; final_activation=identity)
     dims = [input_dim; hidden_dims; output_dim]
     layers = Any[]
@@ -50,9 +91,9 @@ function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10,
         return MLPVectorField(dim, n_atoms, hidden,
                               _dense_chain(input_dim, output_dim, hidden))
     elseif kind == :egnn
-        input_dim = 2 * node_embedding_dim + 3
-        return EGNNVectorField(dim, n_atoms, node_embedding_dim, hidden,
-                               _dense_chain(input_dim, 1, hidden))
+        input_dim = 2 * n_atoms + 3
+        return EGNNVectorField(dim, n_atoms, n_atoms, hidden,
+                               _dense_chain(input_dim, dim, hidden))
     else
         error("Unknown vector field kind: $kind")
     end
@@ -65,8 +106,7 @@ end
 
 function init_cnf_params(rng::AbstractRNG, field::EGNNVectorField; device=identity)
     edge_params, _ = DiffEqFlux.Lux.setup(rng, field.edge_net)
-    node_embed = 0.1f0 .* randn(rng, Float32, field.node_embedding_dim, field.n_atoms)
-    return ComponentArray(edge_net=edge_params, node_embed=node_embed) |> device
+    return ComponentArray(edge_net=edge_params) |> device
 end
 
 function forward_mlp_generic_jvp(input, params, jvp_probe)
@@ -141,9 +181,6 @@ end
 function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     n_atoms = field.n_atoms
 
-    edge_i = repeat(collect(1:n_atoms), outer=n_atoms * batch_size) |> device
-    edge_j = repeat(collect(1:n_atoms), inner=n_atoms, outer=batch_size) |> device
-
     seq_dist_fixed = Float32[i - j for i in 1:n_atoms, j in 1:n_atoms]
     seq_dist_fixed = reshape(seq_dist_fixed, 1, n_atoms * n_atoms)
     seq_dist_flat = repeat(seq_dist_fixed, outer=(1, batch_size)) |> device
@@ -151,12 +188,15 @@ function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
                    1, n_atoms, n_atoms, 1) |> device
 
-    node_embedding_dim = field.node_embedding_dim
-    jvp_probe = vcat(zeros(Float32, 2*node_embedding_dim+1, 1),
+    h_fixed = Matrix{Float32}(I, n_atoms, n_atoms)
+    h_i_flat = repeat(h_fixed, outer=(1, n_atoms * batch_size)) |> device
+    h_j_flat = repeat(h_fixed, inner=(1, n_atoms), outer=(1, batch_size)) |> device
+
+    jvp_probe = vcat(zeros(Float32, 2*n_atoms+1, 1),
                      ones(Float32, 1, 1),
                      zeros(Float32, 1, 1)) |> device
 
-    return edge_i, edge_j, seq_dist_flat, mask, jvp_probe
+    return h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe
 end
 
 function center_of_mass(x)
@@ -168,7 +208,7 @@ function center_positions(x)
 end
 
 function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
-                              edge_i, edge_j, seq_dist_flat, mask, jvp_probe)
+                              h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
     x = u.x
     dim, n_atoms, batch_size = size(x)
     x_i = reshape(x, dim, n_atoms, 1, batch_size)
@@ -178,12 +218,10 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     d_ij_flat = reshape(d_ij, 1, n_atoms * n_atoms * batch_size)
     t_flat = d_ij_flat .* zero(eltype(x)) .+ eltype(x)(t)
 
-    h_i_flat = params.node_embed[:, edge_i]
-    h_j_flat = params.node_embed[:, edge_j]
     net_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
     m_flat, dm_flat = forward_mlp_generic_jvp(net_input, params.edge_net, jvp_probe)
-    m_ij = reshape(m_flat, 1, n_atoms, n_atoms, batch_size)
-    dm_ij = reshape(dm_flat, 1, n_atoms, n_atoms, batch_size)
+    m_ij = reshape(m_flat, dim, n_atoms, n_atoms, batch_size)
+    dm_ij = reshape(dm_flat, dim, n_atoms, n_atoms, batch_size)
 
     denom = d_ij .+ one(eltype(x))
     w_ij = (m_ij ./ denom) .* mask
@@ -193,31 +231,40 @@ function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
     dx = sum(dx_terms; dims=3) ./ Float32(n_atoms)
     dx = reshape(dx, dim, n_atoms, batch_size)
 
-    trace_terms = Float32(dim) .* w_ij .+ 2.0f0 .* d_ij .* dw_ij
+    trace_terms = w_ij .+ 2.0f0 .* r_ij .^ 2 .* dw_ij
     trace_sum = sum(trace_terms; dims=(1, 2, 3)) ./ Float32(n_atoms)
     dlogp = -reshape(trace_sum, 1, batch_size)
     return ComponentArray(x=dx, logp=dlogp)
 end
 
-function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng)
+function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng,
+                      stats=nothing)
     field = ctx.field
     if field isa MLPVectorField
         if ctx.trace_mode == :exact
-            ode_func = (u, p, t) -> _mlp_exact_dynamics(u, p, t; field)
+            ode_func = (u, p, t) -> begin
+                _count_rhs!(stats)
+                _mlp_exact_dynamics(u, p, t; field)
+            end
         else
             state_dim = field.dim * field.n_atoms
             probe = _rademacher(rng, state_dim, batch_size)
             probe_in = vcat(probe, zeros(Float32, 1, batch_size)) |> ctx.device
             probe_out = probe |> ctx.device
-            ode_func = (u, p, t) -> _mlp_hutchinson_dynamics(
-                u, p, t; field, probe_in, probe_out)
+            ode_func = (u, p, t) -> begin
+                _count_rhs!(stats)
+                _mlp_hutchinson_dynamics(u, p, t; field, probe_in, probe_out)
+            end
         end
     elseif field isa EGNNVectorField
-        edge_i, edge_j, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
+        h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
             _egnn_fixed_inputs(field, batch_size, ctx.device)
         end
-        ode_func = (u, p, t) -> _egnn_exact_dynamics(
-            u, p, t; field, edge_i, edge_j, seq_dist_flat, mask, jvp_probe)
+        ode_func = (u, p, t) -> begin
+            _count_rhs!(stats)
+            _egnn_exact_dynamics(
+                u, p, t; field, h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+        end
     else
         error("Unsupported vector field $(typeof(field))")
     end
@@ -228,27 +275,33 @@ function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng)
     return ODEProblem(ode_func, u0, tspan, params)
 end
 
-function _cnf_logp_device(ctx::NBodyCNFContext, params, x_dev; rng)
+function _cnf_logp_device(ctx::NBodyCNFContext, params, x_dev; rng, stats=nothing)
     batch_size = size(x_dev, 3)
     u0 = ComponentArray(x=x_dev, logp=zeros(Float32, 1, batch_size) |> ctx.device)
-    prob = _cnf_problem(ctx, params, batch_size, ctx.tspan; rng)
+    stats !== nothing && _reset!(stats)
+    prob = _cnf_problem(ctx, params, batch_size, ctx.tspan; rng, stats)
     sol = solve(remake(prob; u0, p=params), ctx.solver;
+                sensealg=InterpolatingAdjoint(autojacvec=ZygoteVJP()),
+                dt=1f-5,
                 abstol=ctx.abstol, reltol=ctx.reltol,
                 save_everystep=false, save_start=false, save_end=true,
                 verbose=false)
+    _record_forward_stats!(stats, sol)
     x_noise = sol.u[end].x
     delta_logp = sol.u[end].logp
     return log_standard_normal(x_noise) .- delta_logp
 end
 
-function cnf_logp(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng())
+function cnf_logp(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng(),
+                  stats=nothing)
     x_dev = x_batch |> ctx.device
-    return _cnf_logp_device(ctx, params, x_dev; rng)
+    return _cnf_logp_device(ctx, params, x_dev; rng, stats)
 end
 
-function cnf_nll(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng())
+function cnf_nll(ctx::NBodyCNFContext, params, x_batch; rng=Random.default_rng(),
+                 stats=nothing)
     batch_size = size(x_batch, 3)
-    log_pdata = cnf_logp(ctx, params, x_batch; rng)
+    log_pdata = cnf_logp(ctx, params, x_batch; rng, stats)
     return sum(-log_pdata) / batch_size
 end
 
@@ -273,24 +326,35 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
                         learning_rate::Real=1f-3,
                         log_every::Int=1,
                         checkpoint_callback=nothing,
+                        loss_callback=nothing,
+                        opt_state=nothing,
+                        loss_history::Vector{Float32}=Float32[],
+                        start_epoch::Int=0,
                         rng::AbstractRNG=Xoshiro(42))
     n_samples = size(train_data, 3)
     steps_per_epoch = cld(n_samples, batch_size)
     total_steps = epochs * steps_per_epoch
-    step = 0
-    opt_state = Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params)
-    loss_history = Float32[]
+    step = start_epoch * steps_per_epoch
+    opt_state = opt_state === nothing ?
+        Optimisers.setup(Optimisers.Adam(Float32(learning_rate)), params) : opt_state
+    loss_history = copy(loss_history)
 
-    for epoch in 1:epochs
+    for epoch in (start_epoch + 1):epochs
         shuffled_idx = randperm(rng, n_samples)
         epoch_loss = 0.0f0
+        epoch_forward_steps = 0
+        epoch_forward_rejects = 0
+        epoch_forward_rhs = 0
+        epoch_backprop_rhs = 0
         for (batch_num, batch_start) in enumerate(1:batch_size:n_samples)
             batch_stop = min(batch_start + batch_size - 1, n_samples)
             batch_idx = shuffled_idx[batch_start:batch_stop]
             x_batch = center_positions(train_data[:, :, batch_idx])
             local_batch_size = length(batch_idx)
 
-            loss, grads = Zygote.withgradient(p -> cnf_nll(ctx, p, x_batch; rng), params)
+            solve_stats = CNFSolveStats()
+            loss, grads = Zygote.withgradient(
+                p -> cnf_nll(ctx, p, x_batch; rng, stats=solve_stats), params)
             grad_params = grads[1]
             grad_params === nothing && error("Zygote returned no parameter gradient.")
 
@@ -300,11 +364,29 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
             isfinite(loss_f32) ||
                 error("Non-finite loss at epoch=$epoch batch=$batch_num: $loss_f32")
             epoch_loss += loss_f32 * local_batch_size
+            epoch_forward_steps += solve_stats.forward_naccept[]
+            epoch_forward_rejects += solve_stats.forward_nreject[]
+            epoch_forward_rhs += solve_stats.forward_nf[]
+            batch_backprop_rhs = _backprop_rhs_calls(solve_stats)
+            epoch_backprop_rhs += batch_backprop_rhs
             push!(loss_history, loss_f32)
+            if loss_callback !== nothing
+                loss_callback(;
+                    epoch,
+                    batch=batch_num,
+                    step,
+                    total_steps,
+                    loss=loss_f32,
+                )
+            end
+
+            if log_every > 0 && (step == total_steps || step % log_every == 0)
+                @info "training_step" epoch batch=batch_num step total_steps loss=loss_f32 ode_forward_steps=solve_stats.forward_naccept[] ode_forward_rejects=solve_stats.forward_nreject[] ode_forward_rhs_calls=solve_stats.forward_nf[] backprop_rhs_calls=batch_backprop_rhs
+            end
         end
         mean_loss = Float32(epoch_loss / n_samples)
-        if log_every > 0 && (epoch == 1 || epoch == epochs || epoch % log_every == 0)
-            @info "training" epoch step total_steps steps_per_epoch loss=mean_loss
+        if log_every > 0 && (step == total_steps || step % log_every == 0)
+            @info "training_epoch" epoch step total_steps steps_per_epoch loss=mean_loss ode_forward_steps=epoch_forward_steps ode_forward_rejects=epoch_forward_rejects ode_forward_rhs_calls=epoch_forward_rhs backprop_rhs_calls=epoch_backprop_rhs
         end
         if checkpoint_callback !== nothing
             checkpoint_callback(;

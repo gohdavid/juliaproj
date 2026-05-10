@@ -1,0 +1,25 @@
+experiment:
+  family: nbody_cnf_inference
+  name: nbody_cnf_egnn_static_checkpoint
+  seed: 0
+
+runtime:
+  use_gpu: true
+
+checkpoint:
+  dir: /home/davidgoh/orcd/scratch/juliaproj/runs/nbody_cnf_egnn_static/0ca37815f789/checkpoints
+
+sampling:
+  n_samples: 1000
+  center: false
+
+evaluation:
+  batch_size: 64
+
+output:
+  dir: runs/inference
+  experiment_name: nbody_cnf_egnn_static_checkpoint
+  conformations_file: conformations.jls
+  potential_file: potential.jls
+  score_file: score.jls
+  result_file: inference_result.jls

@@ -1,10 +1,10 @@
-seed: 24
+seed: 26
 
 parallel:
   workers: 16
   seed_stride: 1
   julia_num_threads: 1
-  log_dir: logs/rouse_nonideal_additive
+  log_dir: logs/rouse_ring_lj
 
 rouse:
   dim: 2
@@ -12,11 +12,13 @@ rouse:
   diffusion: 1.0
   bond_length: 1.0
   k_over_xi: 3.0
+  initialization: ring
+  init_noise_std: 0.02
 
 nonideal:
   lennard_jones:
-    enabled: true
-    epsilon: 0.03
+    enabled: false
+    epsilon: 0.04
     sigma: 0.85
     softening: 0.5
     cutoff: 2.0
@@ -24,16 +26,31 @@ nonideal:
     shift: true
   excluded_volume:
     enabled: true
-    epsilon: 0.03
+    epsilon: 0.05
     sigma: 1.0
-    softening: 0.3
+    softening: 0.25
     power: 12.0
     cutoff: 1.5
     exclude_bonded: true
   confinement:
     enabled: true
-    strength: 0.01
+    strength: 0.05
     centered: true
+  hairpin_lj:
+    enabled: false
+    epsilon: 2.5
+    sigma: 0.9
+    softening: 0.3
+    cutoff: 3.0
+    shift: true
+    min_separation: 2
+  ring_lj:
+    enabled: true
+    epsilon: 5.0
+    sigma: 0.9
+    softening: 0.2
+    cutoff: 2.5
+    shift: true
 
 solver:
   algorithm: EM
@@ -48,6 +65,6 @@ save:
 
 output:
   dir: outputs
-  experiment_name: rouse_nonideal_additive
+  experiment_name: rouse_ring_lj
   file: traj.jls
   hdf5_file: trajectories/traj.h5

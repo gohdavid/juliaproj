@@ -1,6 +1,7 @@
 Configuration files are split by workflow:
 
 - `model/`: model-training configs for `src/run_experiment.jl`.
+- `inference/`: checkpoint inference configs for `src/run_inference.jl`.
 - `experiments/`: raw Rouse/polymer trajectory-generation configs for
   `scripts/simulate_rouse_raw.jl`.
 - `plots/`: Rouse analysis/plot configs for `scripts/rouse_score_analytics.jl`.
@@ -16,6 +17,19 @@ julia --project=. src/run_experiment.jl configs/model/nbody_polymer_cnf_egnn.yam
 julia --project=. src/run_experiment.jl configs/model/nbody_polymer_flow_matching_egnn.yaml
 julia --project=. src/run_experiment.jl configs/model/nbody_polymer_diffusion_egnn.yaml
 ```
+
+Run checkpoint inference from the repository root:
+
+```sh
+julia --project=. src/run_inference.jl configs/inference/nbody_cnf_egnn_static_checkpoint.yaml
+```
+
+The inference runner loads `checkpoint.path`, or the newest
+`checkpoint_epoch_*.jls` under `checkpoint.dir`, rebuilds the model from the
+checkpoint's saved training config, samples conformations, evaluates model
+potential as `-cnf_logp(samples)`, evaluates model score/force as
+`grad_x cnf_logp(samples)`, and writes `.jls` payloads under the configured
+output directory.
 
 The n-body configs expose the same knobs that were hard-coded in the notebooks:
 data source, atom count, model type, hidden dimensions, trace estimator, ODE

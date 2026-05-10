@@ -122,6 +122,8 @@ function nonideal_param_vector(sim_cfg)
     lj = get(nonideal, "lennard_jones", Dict())
     ev = get(nonideal, "excluded_volume", Dict())
     conf = get(nonideal, "confinement", Dict())
+    hairpin_lj = get(nonideal, "hairpin_lj", Dict())
+    ring_lj = get(nonideal, "ring_lj", Dict())
     return Float32[
         0.0f0,
         0.0f0,
@@ -143,6 +145,22 @@ function nonideal_param_vector(sim_cfg)
         get(conf, "enabled", false) ? 1.0f0 : 0.0f0,
         Float32(get(conf, "strength", 0.0f0)),
         get(conf, "centered", true) ? 1.0f0 : 0.0f0,
+        get(hairpin_lj, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(hairpin_lj, "epsilon", 0.0f0)),
+        Float32(get(hairpin_lj, "sigma", 1.0f0)),
+        Float32(get(hairpin_lj, "softening", 0.0f0)),
+        Float32(get(hairpin_lj, "cutoff", 0.0f0)),
+        get(hairpin_lj, "shift", true) ? 1.0f0 : 0.0f0,
+        Float32(get(hairpin_lj, "min_separation", 4)),
+        0.0f0,
+        1.0f0,
+        0.0f0,
+        get(ring_lj, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(ring_lj, "epsilon", 0.0f0)),
+        Float32(get(ring_lj, "sigma", 1.0f0)),
+        Float32(get(ring_lj, "softening", 0.0f0)),
+        Float32(get(ring_lj, "cutoff", 0.0f0)),
+        get(ring_lj, "shift", true) ? 1.0f0 : 0.0f0,
     ]
 end
 
@@ -151,7 +169,9 @@ function nonideal_enabled(sim_cfg)
     nonideal === nothing && return false
     return get(get(nonideal, "lennard_jones", Dict()), "enabled", false) ||
            get(get(nonideal, "excluded_volume", Dict()), "enabled", false) ||
-           get(get(nonideal, "confinement", Dict()), "enabled", false)
+           get(get(nonideal, "confinement", Dict()), "enabled", false) ||
+           get(get(nonideal, "hairpin_lj", Dict()), "enabled", false) ||
+           get(get(nonideal, "ring_lj", Dict()), "enabled", false)
 end
 
 function analytic_potential(x, diffusion::Real, k_over_xi::Real, sim_cfg)
@@ -423,6 +443,23 @@ function sim_config_from_experiment_config(exp_cfg)
                 "enabled" => cfgbool(exp_cfg, "nonideal.confinement.enabled", false),
                 "strength" => cfgfloat32(exp_cfg, "nonideal.confinement.strength", 0.0f0),
                 "centered" => cfgbool(exp_cfg, "nonideal.confinement.centered", true),
+            ),
+            "hairpin_lj" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.hairpin_lj.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.softening", 0.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.cutoff", 0.0f0),
+                "shift" => cfgbool(exp_cfg, "nonideal.hairpin_lj.shift", true),
+                "min_separation" => cfgint(exp_cfg, "nonideal.hairpin_lj.min_separation", 4),
+            ),
+            "ring_lj" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.ring_lj.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.ring_lj.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.ring_lj.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.ring_lj.softening", 0.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.ring_lj.cutoff", 0.0f0),
+                "shift" => cfgbool(exp_cfg, "nonideal.ring_lj.shift", true),
             ),
         ),
     )

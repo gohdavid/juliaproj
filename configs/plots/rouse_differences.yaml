@@ -1,0 +1,40 @@
+reference:
+  config: configs/experiments/rouse_base.yaml
+
+variant_order: base,lj,excluded_volume,confinement,additive,hairpin_lj
+
+variants:
+  base:
+    label: base
+    config: configs/experiments/rouse_base.yaml
+  lj:
+    label: LJ
+    config: configs/experiments/rouse_lennard_jones.yaml
+  excluded_volume:
+    label: excluded volume
+    config: configs/experiments/rouse_excluded_volume.yaml
+  confinement:
+    label: confinement
+    config: configs/experiments/rouse_confinement.yaml
+  additive:
+    label: additive
+    config: configs/experiments/rouse_nonideal_additive.yaml
+  hairpin_lj:
+    label: hairpin LJ
+    config: configs/experiments/rouse_hairpin_lj.yaml
+
+data:
+  prefer_hdf5: true
+
+analysis:
+  potential_difference: true
+  force_difference: true
+
+histogram:
+  bins: 60
+
+output:
+  dir: outputs
+  experiment_name: rouse_differences
+  potential_file: rouse_potential_difference_histograms.png
+  force_file: rouse_force_difference_histograms.png

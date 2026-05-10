@@ -8,6 +8,11 @@ Naming convention:
 - `flow_matching_egnn`: equivariant conditional flow-matching model.
 - `nbody_polymer_*`: same model family trained on Rouse HDF5 snapshots instead
   of the static toy distribution.
+- `nbody_polymer_hairpin_lj_cnf_egnn.yaml`: CNF config for the stable
+  hairpin-contact Rouse ensemble.
+- `nbody_polymer_ring_lj_cnf_egnn.yaml`: CNF config for the ring-closed
+  Rouse ensemble with strong closure attraction, excluded volume, and
+  confinement.
 
 Important fields:
 
@@ -20,8 +25,8 @@ Important fields:
   objective.
 - `data.source_dir` / `data.source_pattern`: HDF5 source selection for polymer
   configs.
-- `training.log_every`: epoch interval for training progress logs; `0` disables
-  epoch logs.
+- `training.log_every`: step interval for training progress logs; `0` disables
+  progress logs.
 - `training.checkpoint_every`: epoch interval for parameter checkpoints; `0`
   disables checkpointing. Checkpoints are written to
   `<output-dir>/checkpoints/checkpoint_epoch_*.jls` by default.

@@ -18,11 +18,11 @@ nonideal:
     shift: true
   excluded_volume:
     enabled: true
-    epsilon: 0.01
-    sigma: 0.85
-    softening: 0.5
+    epsilon: 0.03
+    sigma: 1.0
+    softening: 0.3
     power: 12.0
-    cutoff: 2.0
+    cutoff: 1.5
     exclude_bonded: true
   confinement:
     enabled: false

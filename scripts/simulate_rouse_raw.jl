@@ -213,6 +213,14 @@ function cfgflag(cfg, path::AbstractString, default::Bool=false)
     return Bool(BoltzFlow.cfgget(cfg, path, default))
 end
 
+function initialization_mode_code(raw_cfg)
+    mode = lowercase(String(BoltzFlow.cfgget(raw_cfg, "rouse.initialization", "random")))
+    mode in ("random", "coil", "rouse") && return 0
+    mode in ("hairpin", "folded_hairpin") && return 1
+    mode in ("ring", "circle", "circular") && return 2
+    error("Unsupported rouse.initialization=$(repr(mode)); supported values are random, hairpin, and ring")
+end
+
 function build_nonideal_params(raw_cfg)
     lj_enabled = cfgflag(raw_cfg, "nonideal.lennard_jones.enabled", false)
     lj_epsilon = BoltzFlow.cfgfloat(raw_cfg, "nonideal.lennard_jones.epsilon", 0.0)
@@ -234,6 +242,26 @@ function build_nonideal_params(raw_cfg)
     conf_strength = BoltzFlow.cfgfloat(raw_cfg, "nonideal.confinement.strength", 0.0)
     conf_centered = cfgflag(raw_cfg, "nonideal.confinement.centered", true)
 
+    hairpin_lj_enabled = cfgflag(raw_cfg, "nonideal.hairpin_lj.enabled", false)
+    hairpin_lj_epsilon = BoltzFlow.cfgfloat(raw_cfg, "nonideal.hairpin_lj.epsilon", 0.0)
+    hairpin_lj_sigma = BoltzFlow.cfgfloat(raw_cfg, "nonideal.hairpin_lj.sigma", 1.0)
+    hairpin_lj_softening = BoltzFlow.cfgfloat(raw_cfg, "nonideal.hairpin_lj.softening", 0.0)
+    hairpin_lj_cutoff = BoltzFlow.cfgfloat(raw_cfg, "nonideal.hairpin_lj.cutoff", 0.0)
+    hairpin_lj_shift = cfgflag(raw_cfg, "nonideal.hairpin_lj.shift", true)
+    hairpin_lj_min_separation = BoltzFlow.cfgint(raw_cfg, "nonideal.hairpin_lj.min_separation", 4)
+
+    ring_lj_enabled = cfgflag(raw_cfg, "nonideal.ring_lj.enabled", false)
+    ring_lj_epsilon = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.epsilon", 0.0)
+    ring_lj_sigma = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.sigma", 1.0)
+    ring_lj_softening = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.softening", 0.0)
+    ring_lj_cutoff = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.cutoff", 0.0)
+    ring_lj_shift = cfgflag(raw_cfg, "nonideal.ring_lj.shift", true)
+
+    init_mode = initialization_mode_code(raw_cfg)
+    init_separation = BoltzFlow.cfgfloat(raw_cfg, "rouse.hairpin_separation",
+                                         BoltzFlow.cfgfloat(raw_cfg, "rouse.bond_length", 1.0))
+    init_noise_std = BoltzFlow.cfgfloat(raw_cfg, "rouse.init_noise_std", 0.0)
+
     packed = Float64[
         lj_enabled ? 1.0 : 0.0,
         lj_epsilon,
@@ -252,6 +280,22 @@ function build_nonideal_params(raw_cfg)
         conf_enabled ? 1.0 : 0.0,
         conf_strength,
         conf_centered ? 1.0 : 0.0,
+        hairpin_lj_enabled ? 1.0 : 0.0,
+        hairpin_lj_epsilon,
+        hairpin_lj_sigma,
+        hairpin_lj_softening,
+        hairpin_lj_cutoff,
+        hairpin_lj_shift ? 1.0 : 0.0,
+        hairpin_lj_min_separation,
+        init_mode,
+        init_separation,
+        init_noise_std,
+        ring_lj_enabled ? 1.0 : 0.0,
+        ring_lj_epsilon,
+        ring_lj_sigma,
+        ring_lj_softening,
+        ring_lj_cutoff,
+        ring_lj_shift ? 1.0 : 0.0,
     ]
     config = Dict(
         "lennard_jones" => Dict(
@@ -276,6 +320,28 @@ function build_nonideal_params(raw_cfg)
             "enabled" => conf_enabled,
             "strength" => conf_strength,
             "centered" => conf_centered,
+        ),
+        "hairpin_lj" => Dict(
+            "enabled" => hairpin_lj_enabled,
+            "epsilon" => hairpin_lj_epsilon,
+            "sigma" => hairpin_lj_sigma,
+            "softening" => hairpin_lj_softening,
+            "cutoff" => hairpin_lj_cutoff,
+            "shift" => hairpin_lj_shift,
+            "min_separation" => hairpin_lj_min_separation,
+        ),
+        "ring_lj" => Dict(
+            "enabled" => ring_lj_enabled,
+            "epsilon" => ring_lj_epsilon,
+            "sigma" => ring_lj_sigma,
+            "softening" => ring_lj_softening,
+            "cutoff" => ring_lj_cutoff,
+            "shift" => ring_lj_shift,
+        ),
+        "initialization" => Dict(
+            "mode" => init_mode == 1 ? "hairpin" : init_mode == 2 ? "ring" : "random",
+            "hairpin_separation" => init_separation,
+            "noise_std" => init_noise_std,
         ),
     )
     return packed, config

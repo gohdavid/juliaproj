@@ -131,17 +131,29 @@ function _canonical_config(value)
     end
 end
 
-function _drop_top_level(cfg::AbstractDict, exclude)
+function _drop_excluded(cfg::AbstractDict, exclude)
     excluded = Set(String.(exclude))
-    return Dict{String,Any}(
-        String(key) => value for (key, value) in cfg
-        if !(String(key) in excluded)
-    )
+
+    function drop_value(value, prefix::String)
+        if value isa AbstractDict
+            result = Dict{String,Any}()
+            for (key, child) in value
+                key_str = String(key)
+                path = isempty(prefix) ? key_str : prefix * "." * key_str
+                path in excluded && continue
+                result[key_str] = drop_value(child, path)
+            end
+            return result
+        end
+        return value
+    end
+
+    return drop_value(cfg, "")
 end
 
 function config_hash(cfg::AbstractDict; n_chars::Int=12, exclude=())
     n_chars >= 3 || error("config_hash needs at least 3 characters")
-    digest = bytes2hex(sha256(_canonical_config(_drop_top_level(cfg, exclude))))
+    digest = bytes2hex(sha256(_canonical_config(_drop_excluded(cfg, exclude))))
     return digest[begin:min(end, n_chars)]
 end
 
@@ -150,6 +162,10 @@ function config_output_dir(cfg::AbstractDict; default_root::AbstractString="outp
     root = String(cfgget(cfg, "output.dir", default_root))
     name = String(cfgget(cfg, "output.experiment_name",
                          cfgget(cfg, "experiment.name", default_name)))
-    digest = config_hash(cfg; exclude=("output",))
+    digest = config_hash(cfg; exclude=(
+        "output",
+        "training.epochs",
+        "training.resume_checkpoint",
+    ))
     return joinpath(root, name, digest)
 end

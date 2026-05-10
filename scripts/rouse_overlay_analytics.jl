@@ -68,6 +68,8 @@ function nonideal_param_vector(sim_cfg)
     lj = get(nonideal, "lennard_jones", Dict{String,Any}())
     ev = get(nonideal, "excluded_volume", Dict{String,Any}())
     conf = get(nonideal, "confinement", Dict{String,Any}())
+    hairpin_lj = get(nonideal, "hairpin_lj", Dict{String,Any}())
+    ring_lj = get(nonideal, "ring_lj", Dict{String,Any}())
     return Float32[
         0.0f0,
         0.0f0,
@@ -89,6 +91,22 @@ function nonideal_param_vector(sim_cfg)
         get(conf, "enabled", false) ? 1.0f0 : 0.0f0,
         Float32(get(conf, "strength", 0.0f0)),
         get(conf, "centered", true) ? 1.0f0 : 0.0f0,
+        get(hairpin_lj, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(hairpin_lj, "epsilon", 0.0f0)),
+        Float32(get(hairpin_lj, "sigma", 1.0f0)),
+        Float32(get(hairpin_lj, "softening", 0.0f0)),
+        Float32(get(hairpin_lj, "cutoff", 0.0f0)),
+        get(hairpin_lj, "shift", true) ? 1.0f0 : 0.0f0,
+        Float32(get(hairpin_lj, "min_separation", 4)),
+        0.0f0,
+        1.0f0,
+        0.0f0,
+        get(ring_lj, "enabled", false) ? 1.0f0 : 0.0f0,
+        Float32(get(ring_lj, "epsilon", 0.0f0)),
+        Float32(get(ring_lj, "sigma", 1.0f0)),
+        Float32(get(ring_lj, "softening", 0.0f0)),
+        Float32(get(ring_lj, "cutoff", 0.0f0)),
+        get(ring_lj, "shift", true) ? 1.0f0 : 0.0f0,
     ]
 end
 
@@ -129,6 +147,23 @@ function sim_config_from_experiment_config(exp_cfg)
                 "strength" => cfgfloat32(exp_cfg, "nonideal.confinement.strength", 0.0f0),
                 "centered" => cfgbool(exp_cfg, "nonideal.confinement.centered", true),
             ),
+            "hairpin_lj" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.hairpin_lj.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.softening", 0.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.hairpin_lj.cutoff", 0.0f0),
+                "shift" => cfgbool(exp_cfg, "nonideal.hairpin_lj.shift", true),
+                "min_separation" => cfgint(exp_cfg, "nonideal.hairpin_lj.min_separation", 4),
+            ),
+            "ring_lj" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.ring_lj.enabled", false),
+                "epsilon" => cfgfloat32(exp_cfg, "nonideal.ring_lj.epsilon", 0.0f0),
+                "sigma" => cfgfloat32(exp_cfg, "nonideal.ring_lj.sigma", 1.0f0),
+                "softening" => cfgfloat32(exp_cfg, "nonideal.ring_lj.softening", 0.0f0),
+                "cutoff" => cfgfloat32(exp_cfg, "nonideal.ring_lj.cutoff", 0.0f0),
+                "shift" => cfgbool(exp_cfg, "nonideal.ring_lj.shift", true),
+            ),
         ),
     )
 end
@@ -145,21 +180,50 @@ function analytic_score_norm2(x, diffusion::Real, k_over_xi::Real, sim_cfg)
     return sum(abs2, score)
 end
 
-function histogram_density(values, edges)
-    counts = zeros(Float64, length(edges) - 1)
-    for value in values
-        if value == edges[end]
-            counts[end] += 1
-            continue
-        end
-        idx = searchsortedlast(edges, Float64(value))
-        if 1 <= idx <= length(counts)
-            counts[idx] += 1
-        end
+function quantile_sorted(sorted_values, q::Real)
+    n = length(sorted_values)
+    n == 0 && error("Cannot compute quantile of an empty vector")
+    pos = 1.0 + Float64(q) * (n - 1)
+    lo = floor(Int, pos)
+    hi = ceil(Int, pos)
+    lo == hi && return sorted_values[lo]
+    weight = pos - lo
+    return (1.0 - weight) * sorted_values[lo] + weight * sorted_values[hi]
+end
+
+function robust_range(values; lo_q=0.005, hi_q=0.995)
+    sorted_values = sort(Float64.(values))
+    lo = quantile_sorted(sorted_values, lo_q)
+    hi = quantile_sorted(sorted_values, hi_q)
+    lo == hi && return lo - 1.0, hi + 1.0
+    pad = 0.05 * (hi - lo)
+    return max(0.0, lo - pad), hi + pad
+end
+
+function silverman_bandwidth(values)
+    vals = Float64.(values)
+    n = length(vals)
+    n > 1 || return 1.0
+    s = std(vals)
+    sorted_vals = sort(vals)
+    iqr = quantile_sorted(sorted_vals, 0.75) - quantile_sorted(sorted_vals, 0.25)
+    scale = min(s, iqr / 1.349)
+    if !isfinite(scale) || scale <= 0
+        scale = s > 0 ? s : max(abs(mean(vals)), 1.0)
     end
-    widths = diff(edges)
-    centers = (edges[1:end-1] .+ edges[2:end]) ./ 2
-    return centers, counts ./ (sum(counts) .* widths)
+    return max(0.9 * scale * n^(-1 / 5), eps(Float64))
+end
+
+function kde_density(values, xs; bandwidth=nothing)
+    vals = Float64.(values)
+    h = bandwidth === nothing ? silverman_bandwidth(vals) : Float64(bandwidth)
+    norm = 1.0 / (length(vals) * h * sqrt(2.0 * pi))
+    density = zeros(Float64, length(xs))
+    inv_h = 1.0 / h
+    for v in vals
+        @. density += exp(-0.5 * ((xs - v) * inv_h)^2)
+    end
+    return density .* norm
 end
 
 function load_values(label, cfg_path)
@@ -197,27 +261,30 @@ function main()
         ("excluded volume", "configs/experiments/rouse_excluded_volume.yaml"),
         ("confinement", "configs/experiments/rouse_confinement.yaml"),
         ("additive", "configs/experiments/rouse_nonideal_additive.yaml"),
+        ("hairpin LJ", "configs/experiments/rouse_hairpin_lj.yaml"),
+        ("ring LJ", "configs/experiments/rouse_ring_lj.yaml"),
     ]
     data = [load_values(label, cfg) for (label, cfg) in variants]
 
     potential_all = reduce(vcat, (Float64.(d.potentials) for d in data))
     score_all = reduce(vcat, (Float64.(d.score_norm2) for d in data))
     force_all = reduce(vcat, (Float64.(d.force_norm) for d in data))
-    potential_edges = collect(range(max(0.0, minimum(potential_all) - 1.0),
-                                    maximum(potential_all) + 1.0; length=75))
-    score_edges = collect(range(max(0.0, minimum(score_all) - 15.0),
-                                maximum(score_all) + 15.0; length=90))
-    force_edges = collect(range(max(0.0, minimum(force_all) - 1.0),
-                                maximum(force_all) + 1.0; length=90))
+    potential_lo, potential_hi = robust_range(potential_all)
+    score_lo, score_hi = robust_range(score_all)
+    force_lo, force_hi = robust_range(force_all)
+    potential_xs = collect(range(potential_lo, potential_hi; length=800))
+    score_xs = collect(range(score_lo, score_hi; length=800))
+    force_xs = collect(range(force_lo, force_hi; length=800))
 
     colors = [colorant"#000000", colorant"#0072B2", colorant"#D55E00",
-              colorant"#009E73", colorant"#CC79A7"]
+              colorant"#009E73", colorant"#CC79A7", colorant"#F0E442",
+              colorant"#56B4E9"]
 
     fig = Figure(size=(1200, 560), backgroundcolor=:white)
     ax_u = Axis(fig[1, 1], xlabel="U(X)", ylabel="probability density",
-                title="Potential")
+                title="Potential KDE")
     ax_s = Axis(fig[1, 2], xlabel="||score(X)||²", ylabel="probability density",
-                title="Score norm squared")
+                title="Score-norm² KDE")
     for ax in (ax_u, ax_s)
         ax.xgridvisible[] = false
         ax.ygridvisible[] = false
@@ -225,10 +292,10 @@ function main()
     end
 
     for (i, d) in enumerate(data)
-        xu, yu = histogram_density(d.potentials, potential_edges)
-        xs, ys = histogram_density(d.score_norm2, score_edges)
-        lines!(ax_u, xu, yu, color=colors[i], linewidth=3, label=d.label)
-        lines!(ax_s, xs, ys, color=colors[i], linewidth=3, label=d.label)
+        yu = kde_density(d.potentials, potential_xs)
+        ys = kde_density(d.score_norm2, score_xs)
+        lines!(ax_u, potential_xs, yu, color=colors[i], linewidth=3, label=d.label)
+        lines!(ax_s, score_xs, ys, color=colors[i], linewidth=3, label=d.label)
         vlines!(ax_u, [mean(d.potentials)], color=colors[i], linestyle=:dash, linewidth=1.6)
         vlines!(ax_s, [mean(d.score_norm2)], color=colors[i], linestyle=:dash, linewidth=1.6)
     end
@@ -236,7 +303,7 @@ function main()
 
     out_dir = project_path("outputs/rouse_overlays")
     mkpath(out_dir)
-    out_path = joinpath(out_dir, "rouse_potential_score_overlay.png")
+    out_path = joinpath(out_dir, "rouse_potential_score_kde_overlay.png")
     save(out_path, fig)
     println("Saved overlay: $out_path")
 
@@ -247,12 +314,12 @@ function main()
     ax_f.ygridvisible[] = false
     hidespines!(ax_f, :t, :r)
     for (i, d) in enumerate(data)
-        xf, yf = histogram_density(d.force_norm, force_edges)
-        lines!(ax_f, xf, yf, color=colors[i], linewidth=3, label=d.label)
+        yf = kde_density(d.force_norm, force_xs)
+        lines!(ax_f, force_xs, yf, color=colors[i], linewidth=3, label=d.label)
         vlines!(ax_f, [mean(d.force_norm)], color=colors[i], linestyle=:dash, linewidth=1.6)
     end
     axislegend(ax_f, position=:rt)
-    force_path = joinpath(out_dir, "rouse_force_norm_overlay.png")
+    force_path = joinpath(out_dir, "rouse_force_norm_kde_overlay.png")
     save(force_path, force_fig)
     println("Saved force overlay: $force_path")
 end
