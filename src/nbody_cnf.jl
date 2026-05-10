@@ -1,6 +1,9 @@
 export MLPVectorField, EGNNVectorField, NBodyCNFContext
 export build_vector_field, init_cnf_params, cnf_logp, cnf_logp_gradient
 export cnf_nll, train_cnf_adam, generate_cnf_samples
+export identity_data_normalizer, fit_data_normalizer, apply_data_normalizer
+export invert_data_normalizer, normalized_cnf_logp, normalized_cnf_logp_gradient
+export generate_normalized_cnf_samples
 export log_standard_normal
 
 abstract type AbstractNBodyVectorField end
@@ -256,6 +259,104 @@ end
 
 function center_positions(x)
     return x .- center_of_mass(x)
+end
+
+function identity_data_normalizer()
+    return Dict{String,Any}(
+        "enabled" => false,
+        "mode" => "identity",
+        "mean" => Float32[0.0],
+        "scale" => Float32[1.0],
+        "eps" => Float32(0.0),
+        "log_abs_det" => Float32(0.0),
+    )
+end
+
+function _normalizer_enabled(normalizer)
+    normalizer isa AbstractDict || return false
+    return Bool(get(normalizer, "enabled", false))
+end
+
+function _normalizer_stat_shape(mode::AbstractString, x)
+    dim, n_atoms, _ = size(x)
+    if mode == "scalar"
+        return (1, 1, 1)
+    elseif mode == "per_dim"
+        return (dim, 1, 1)
+    elseif mode == "per_feature"
+        return (dim, n_atoms, 1)
+    end
+    error("Unsupported data.normalization_mode: $mode")
+end
+
+function _normalizer_log_abs_det(scale, dim::Int, n_atoms::Int)
+    if length(scale) == 1
+        return Float32(dim * n_atoms * log(Float32(scale[1])))
+    elseif size(scale, 2) == 1
+        return Float32(n_atoms * sum(log.(Float32.(scale))))
+    end
+    return Float32(sum(log.(Float32.(scale))))
+end
+
+function fit_data_normalizer(x; enabled::Bool=false,
+                             mode::AbstractString="scalar",
+                             eps::Real=1.0f-6)
+    enabled || return identity_data_normalizer()
+    dim, n_atoms, _ = size(x)
+    shape = _normalizer_stat_shape(mode, x)
+    reduce_dims = mode == "scalar" ? (1, 2, 3) :
+                  mode == "per_dim" ? (2, 3) :
+                  (3,)
+    mean_x = Float32.(mean(x; dims=reduce_dims))
+    std_x = Float32.(sqrt.(mean(abs2, x .- mean_x; dims=reduce_dims)))
+    scale = max.(std_x, Float32(eps))
+    mean_x = reshape(mean_x, shape)
+    scale = reshape(scale, shape)
+    return Dict{String,Any}(
+        "enabled" => true,
+        "mode" => String(mode),
+        "mean" => Array{Float32}(mean_x),
+        "scale" => Array{Float32}(scale),
+        "eps" => Float32(eps),
+        "log_abs_det" => _normalizer_log_abs_det(scale, dim, n_atoms),
+    )
+end
+
+function apply_data_normalizer(x, normalizer)
+    _normalizer_enabled(normalizer) || return x
+    mean_x = get(normalizer, "mean", Float32[0.0])
+    scale = get(normalizer, "scale", Float32[1.0])
+    return (x .- mean_x) ./ scale
+end
+
+function invert_data_normalizer(x, normalizer)
+    _normalizer_enabled(normalizer) || return x
+    mean_x = get(normalizer, "mean", Float32[0.0])
+    scale = get(normalizer, "scale", Float32[1.0])
+    return x .* scale .+ mean_x
+end
+
+function _normalizer_log_abs_det(normalizer, x)
+    _normalizer_enabled(normalizer) || return Float32(0.0)
+    if haskey(normalizer, "log_abs_det")
+        return Float32(normalizer["log_abs_det"])
+    end
+    return _normalizer_log_abs_det(normalizer["scale"], size(x, 1), size(x, 2))
+end
+
+function normalized_cnf_logp(ctx::NBodyCNFContext, params, x_batch, normalizer;
+                             rng=Random.default_rng(), stats=nothing)
+    x_norm = center_positions(apply_data_normalizer(x_batch, normalizer))
+    logp_norm = cnf_logp(ctx, params, x_norm; rng, stats)
+    return logp_norm .- _normalizer_log_abs_det(normalizer, x_batch)
+end
+
+function normalized_cnf_logp_gradient(ctx::NBodyCNFContext, params, x_batch,
+                                      normalizer; rng=Random.default_rng())
+    x_norm = center_positions(apply_data_normalizer(x_batch, normalizer))
+    grad_norm = cnf_logp_gradient(ctx, params, x_norm; rng)
+    _normalizer_enabled(normalizer) || return grad_norm
+    return grad_norm ./ normalizer["scale"]
 end
 
 function _egnn_velocity(field::EGNNVectorField, params, x, t;
@@ -593,4 +694,11 @@ function generate_cnf_samples(ctx::NBodyCNFContext, params, n_samples::Int;
                 save_everystep=false, save_start=false, save_end=true,
                 verbose=false)
     return center_positions(sol.u[end].x)
+end
+
+function generate_normalized_cnf_samples(ctx::NBodyCNFContext, params, n_samples::Int,
+                                         normalizer;
+                                         rng::AbstractRNG=Random.default_rng())
+    samples_norm = generate_cnf_samples(ctx, params, n_samples; rng)
+    return center_positions(invert_data_normalizer(samples_norm, normalizer))
 end

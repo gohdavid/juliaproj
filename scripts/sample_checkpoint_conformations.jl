@@ -138,6 +138,7 @@ function sample_checkpoint_conformations(opts)
     device = BoltzFlow._device_from_config(cfg)
     ctx, _ = BoltzFlow._cnf_context_from_config(cfg, device)
     params = checkpoint["params"] |> device
+    normalizer = BoltzFlow.cfgget(cfg, "data.normalizer", BoltzFlow.identity_data_normalizer())
 
     n_samples = Int(opts["n_samples"])
     batch_size = Int(opts["batch_size"])
@@ -154,7 +155,7 @@ function sample_checkpoint_conformations(opts)
         local_n = stop - cursor + 1
         @info "sampling conformations" checkpoint_path epoch=get(checkpoint, "epoch", nothing) range="$(cursor):$(stop)" total=n_samples
         samples[:, :, cursor:stop] .= cpu(
-            BoltzFlow.generate_cnf_samples(ctx, params, local_n; rng)
+            BoltzFlow.generate_normalized_cnf_samples(ctx, params, local_n, normalizer; rng)
         )
         cursor = stop + 1
     end
@@ -174,6 +175,7 @@ function sample_checkpoint_conformations(opts)
             "batch_size" => batch_size,
             "seed" => seed,
         ),
+        "data_normalizer" => normalizer,
         "created_at" => Dates.now(),
     )
     serialize(output_path, payload)

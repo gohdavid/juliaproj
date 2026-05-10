@@ -151,6 +151,7 @@ function cnf_scores(checkpoint, checkpoint_path::AbstractString, samples;
     device = BoltzFlow._device_from_config(cfg)
     ctx, _ = BoltzFlow._cnf_context_from_config(cfg, device)
     params = checkpoint["params"] |> device
+    normalizer = BoltzFlow.cfgget(cfg, "data.normalizer", BoltzFlow.identity_data_normalizer())
     cpu = BoltzFlow.DiffEqFlux.Lux.cpu_device()
 
     scores = similar(samples)
@@ -160,7 +161,8 @@ function cnf_scores(checkpoint, checkpoint_path::AbstractString, samples;
         batch_idx = batch_start:batch_stop
         @info "evaluating CNF score" checkpoint_path range="$(batch_start):$(batch_stop)" total=n_samples
         scores[:, :, batch_idx] .= cpu(
-            BoltzFlow.cnf_logp_gradient(ctx, params, samples[:, :, batch_idx]; rng)
+            BoltzFlow.normalized_cnf_logp_gradient(
+                ctx, params, samples[:, :, batch_idx], normalizer; rng)
         )
     end
     return scores

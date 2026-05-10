@@ -73,6 +73,7 @@ end
 
 function _evaluate_cnf_potential_and_score(ctx::NBodyCNFContext, params, samples;
                                            batch_size::Int=64,
+                                           normalizer=identity_data_normalizer(),
                                            rng::AbstractRNG=Random.default_rng())
     n_samples = size(samples, 3)
     potential = Vector{Float32}(undef, n_samples)
@@ -83,8 +84,8 @@ function _evaluate_cnf_potential_and_score(ctx::NBodyCNFContext, params, samples
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
         batch = samples[:, :, batch_idx]
-        logp = cpu(cnf_logp(ctx, params, batch; rng))
-        grad = cpu(cnf_logp_gradient(ctx, params, batch; rng))
+        logp = cpu(normalized_cnf_logp(ctx, params, batch, normalizer; rng))
+        grad = cpu(normalized_cnf_logp_gradient(ctx, params, batch, normalizer; rng))
         potential[batch_idx] .= Float32.(-vec(logp))
         score[:, :, batch_idx] .= grad
     end
@@ -146,12 +147,12 @@ function _serialize_inference_outputs(cfg, checkpoint_path, checkpoint, samples,
     )))
     serialize(paths["potential"], merge(common, Dict{String,Any}(
         "potential" => potential,
-        "definition" => "-cnf_logp(samples)",
+        "definition" => "-normalized_cnf_logp(samples); includes affine data-normalization log-Jacobian when present",
     )))
     serialize(paths["score"], merge(common, Dict{String,Any}(
         "score" => score,
         "force" => score,
-        "definition" => "grad_x cnf_logp(samples); force is identical for dimensionless model units",
+        "definition" => "grad_x normalized_cnf_logp(samples); includes affine data-normalization chain rule when present",
     )))
 
     reference = _maybe_polymer_reference_payload(samples, data_cfg)
@@ -194,11 +195,12 @@ function run_inference(cfg::Dict{String,Any}; config_path=nothing)
         device = _device_from_config(train_cfg)
         ctx, data_cfg = _cnf_context_from_config(train_cfg, device)
         params = checkpoint["params"] |> device
+        normalizer = cfgget(train_cfg, "data.normalizer", identity_data_normalizer())
 
         n_samples = cfgint(cfg, "sampling.n_samples",
                            cfgint(train_cfg, "sampling.n_samples", 1000))
         samples = DiffEqFlux.Lux.cpu_device()(
-            generate_cnf_samples(ctx, params, n_samples; rng))
+            generate_normalized_cnf_samples(ctx, params, n_samples, normalizer; rng))
         if cfgbool(cfg, "sampling.center", cfgbool(train_cfg, "data.center", false))
             samples = center_positions(samples)
         end
@@ -206,7 +208,7 @@ function run_inference(cfg::Dict{String,Any}; config_path=nothing)
         eval_batch_size = cfgint(cfg, "evaluation.batch_size",
                                  cfgint(cfg, "sampling.batch_size", 64))
         potential, score = _evaluate_cnf_potential_and_score(
-            ctx, params, samples; batch_size=eval_batch_size, rng)
+            ctx, params, samples; batch_size=eval_batch_size, normalizer, rng)
 
         paths = _serialize_inference_outputs(
             cfg, checkpoint_path, checkpoint, samples, potential, score, output_dir, data_cfg)

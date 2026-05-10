@@ -225,7 +225,7 @@ function _loss_stream_callback(cfg, output_dir::AbstractString, loss_kind::Abstr
 end
 
 function _checkpoint_callback(cfg, output_dir::AbstractString)
-    checkpoint_every = cfgint(cfg, "training.checkpoint_every", 0)
+    checkpoint_every = cfgint(cfg, "training.checkpoint_every", 1)
     checkpoint_every > 0 || return nothing
 
     checkpoint_dir = String(cfgget(cfg, "training.checkpoint_dir",
@@ -256,6 +256,39 @@ function _checkpoint_callback(cfg, output_dir::AbstractString)
         @info "checkpoint saved" epoch path
         return path
     end
+end
+
+function _ensure_data_section!(cfg::Dict{String,Any})
+    data = get!(cfg, "data", Dict{String,Any}())
+    data isa Dict{String,Any} && return data
+    data_dict = Dict{String,Any}(String(k) => v for (k, v) in data)
+    cfg["data"] = data_dict
+    return data_dict
+end
+
+function _checkpoint_normalizer(checkpoint)
+    checkpoint === nothing && return nothing
+    ckpt_cfg = get(checkpoint, "config", nothing)
+    ckpt_cfg isa AbstractDict || return nothing
+    return cfgget(ckpt_cfg, "data.normalizer", nothing)
+end
+
+function _fit_or_restore_data_normalizer!(cfg::Dict{String,Any}, train_data,
+                                          checkpoint=nothing)
+    restored = _checkpoint_normalizer(checkpoint)
+    normalizer = restored === nothing ? fit_data_normalizer(
+        train_data;
+        enabled=cfgbool(cfg, "data.normalize", false),
+        mode=String(cfgget(cfg, "data.normalization_mode", "scalar")),
+        eps=cfgfloat32(cfg, "data.normalization_eps", 1.0f-6),
+    ) : restored
+    _ensure_data_section!(cfg)["normalizer"] = normalizer
+    if Bool(get(normalizer, "enabled", false))
+        @info "data normalization enabled" mode=get(normalizer, "mode", "unknown") scale=get(normalizer, "scale", nothing) log_abs_det=get(normalizer, "log_abs_det", nothing)
+    else
+        @info "data normalization disabled"
+    end
+    return normalizer
 end
 
 function _sample_metrics(train_data, samples)
@@ -292,6 +325,7 @@ end
 
 function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
                                         force_targets; batch_size::Int=64,
+                                        normalizer=identity_data_normalizer(),
                                         rng::AbstractRNG=Random.default_rng())
     n_samples = size(train_data, 3)
     sqerr = 0.0
@@ -300,7 +334,8 @@ function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
         pred = DiffEqFlux.Lux.cpu_device()(
-            cnf_logp_gradient(ctx, params, train_data[:, :, batch_idx]; rng))
+            normalized_cnf_logp_gradient(
+                ctx, params, train_data[:, :, batch_idx], normalizer; rng))
         target = @view(force_targets[:, :, batch_idx])
         sqerr += sum(abs2, pred .- target)
         n_values += length(target)
@@ -310,15 +345,21 @@ end
 
 function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params,
                                              train_data, force_targets;
-                                             batch_size::Int=64)
+                                             batch_size::Int=64,
+                                             normalizer=identity_data_normalizer())
     n_samples = size(train_data, 3)
     sqerr = 0.0
     n_values = 0
     for batch_start in 1:batch_size:n_samples
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
+        x_norm = center_positions(apply_data_normalizer(
+            train_data[:, :, batch_idx], normalizer))
         pred = DiffEqFlux.Lux.cpu_device()(
-            diffusion_logp_gradient(ctx, params, train_data[:, :, batch_idx]))
+            diffusion_logp_gradient(ctx, params, x_norm))
+        if Bool(get(normalizer, "enabled", false))
+            pred = pred ./ normalizer["scale"]
+        end
         target = @view(force_targets[:, :, batch_idx])
         sqerr += sum(abs2, pred .- target)
         n_values += length(target)
@@ -345,6 +386,7 @@ end
 
 function _cnf_gradlogp_force_cosine_metric(ctx::NBodyCNFContext, params, train_data,
                                            force_targets; batch_size::Int=64,
+                                           normalizer=identity_data_normalizer(),
                                            rng::AbstractRNG=Random.default_rng())
     n_samples = size(train_data, 3)
     cosine_sum = 0.0
@@ -353,7 +395,8 @@ function _cnf_gradlogp_force_cosine_metric(ctx::NBodyCNFContext, params, train_d
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
         pred = DiffEqFlux.Lux.cpu_device()(
-            cnf_logp_gradient(ctx, params, train_data[:, :, batch_idx]; rng))
+            normalized_cnf_logp_gradient(
+                ctx, params, train_data[:, :, batch_idx], normalizer; rng))
         target = @view(force_targets[:, :, batch_idx])
         batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
         cosine_sum += batch_cosine_sum
@@ -364,15 +407,21 @@ end
 
 function _diffusion_gradlogp_force_cosine_metric(ctx::NBodyDiffusionContext, params,
                                                  train_data, force_targets;
-                                                 batch_size::Int=64)
+                                                 batch_size::Int=64,
+                                                 normalizer=identity_data_normalizer())
     n_samples = size(train_data, 3)
     cosine_sum = 0.0
     n_valid = 0
     for batch_start in 1:batch_size:n_samples
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
+        x_norm = center_positions(apply_data_normalizer(
+            train_data[:, :, batch_idx], normalizer))
         pred = DiffEqFlux.Lux.cpu_device()(
-            diffusion_logp_gradient(ctx, params, train_data[:, :, batch_idx]))
+            diffusion_logp_gradient(ctx, params, x_norm))
+        if Bool(get(normalizer, "enabled", false))
+            pred = pred ./ normalizer["scale"]
+        end
         target = @view(force_targets[:, :, batch_idx])
         batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
         cosine_sum += batch_cosine_sum
@@ -497,6 +546,8 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
         ctx = _make_context(cfg, field, device)
         params = init_cnf_params(rng, field; device)
         resume_checkpoint = _resume_checkpoint(cfg, output_dir)
+        normalizer = _fit_or_restore_data_normalizer!(cfg, train_data, resume_checkpoint)
+        train_model_data = apply_data_normalizer(train_data, normalizer)
         start_epoch = 0
         opt_state = nothing
         previous_losses = Float32[]
@@ -513,7 +564,7 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
         _log_parameter_count("nbody_cnf", params)
 
         params, _, losses = train_cnf_adam(
-            ctx, params, train_data;
+            ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 5f-3),
@@ -525,8 +576,8 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
             start_epoch,
             rng,
         )
-        samples = generate_cnf_samples(
-            ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng)
+        samples = generate_normalized_cnf_samples(
+            ctx, params, cfgint(cfg, "sampling.n_samples", 1000), normalizer; rng)
 
         metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
             "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
@@ -536,6 +587,7 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
             metrics["gradlogp_force_mse"] = _cnf_gradlogp_force_mse_metric(
                 ctx, params, train_data, force_targets;
                 batch_size=cfgint(cfg, "training.batch_size", 64),
+                normalizer,
                 rng,
             )
         end
@@ -562,6 +614,8 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=n
         if cfgbool(cfg, "data.center", true)
             train_data = center_positions(train_data)
         end
+        normalizer = _fit_or_restore_data_normalizer!(cfg, train_data)
+        train_model_data = apply_data_normalizer(train_data, normalizer)
 
         field = build_fm_vector_field(
             dim=data_cfg.dim,
@@ -577,7 +631,7 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=n
         _log_parameter_count("nbody_flow_matching", params)
 
         params, _, losses = train_flow_matching_adam(
-            ctx, params, train_data;
+            ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
@@ -587,8 +641,11 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=n
             rng,
         )
 
-        samples = generate_flow_matching_samples(
-            ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng)
+        samples = center_positions(invert_data_normalizer(
+            generate_flow_matching_samples(
+                ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng),
+            normalizer,
+        ))
         metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
             "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
         ))
@@ -615,6 +672,8 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
         if cfgbool(cfg, "data.center", true)
             train_data = center_positions(train_data)
         end
+        normalizer = _fit_or_restore_data_normalizer!(cfg, train_data)
+        train_model_data = apply_data_normalizer(train_data, normalizer)
 
         model = build_diffusion_model(
             dim=data_cfg.dim,
@@ -629,7 +688,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
         _log_parameter_count("nbody_diffusion", params)
 
         params, _, losses = train_diffusion_adam(
-            ctx, params, train_data;
+            ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
@@ -639,8 +698,11 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
             rng,
         )
 
-        samples = generate_diffusion_samples(
-            ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng)
+        samples = center_positions(invert_data_normalizer(
+            generate_diffusion_samples(
+                ctx, params, cfgint(cfg, "sampling.n_samples", 1000); rng),
+            normalizer,
+        ))
         metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
             "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
         ))
@@ -649,6 +711,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
             metrics["gradlogp_force_mse"] = _diffusion_gradlogp_force_mse_metric(
                 ctx, params, train_data, force_targets;
                 batch_size=cfgint(cfg, "training.batch_size", 64),
+                normalizer,
             )
         end
 

@@ -19,6 +19,9 @@ export NBodyDataConfig, generate_nbody_dataset, sample_training_batch
 export MLPVectorField, EGNNVectorField, NBodyCNFContext
 export build_vector_field, init_cnf_params, cnf_logp, cnf_logp_gradient
 export train_cnf_adam, generate_cnf_samples
+export identity_data_normalizer, fit_data_normalizer, apply_data_normalizer
+export invert_data_normalizer, normalized_cnf_logp, normalized_cnf_logp_gradient
+export generate_normalized_cnf_samples
 export EquivariantFMVectorField, NBodyFlowMatchingContext, FlowMatchingResult
 export build_fm_vector_field, init_fm_params, train_flow_matching_adam
 export generate_flow_matching_samples, center_positions, pairwise_distance_mae

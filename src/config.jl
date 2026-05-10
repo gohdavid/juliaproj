@@ -233,6 +233,7 @@ function config_output_dir(cfg::AbstractDict; default_root::AbstractString="outp
     digest = config_hash(cfg; exclude=(
         "output",
         "training.epochs",
+        "training.checkpoint_every",
         "training.resume_checkpoint",
     ))
     return joinpath(root, name, digest)
