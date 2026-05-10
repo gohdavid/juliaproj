@@ -24,8 +24,8 @@ Important fields:
   configs.
 - `training.log_every`: step interval for training progress logs; `0` disables
   progress logs.
-- `training.checkpoint_every`: epoch interval for parameter checkpoints; `0`
-  disables checkpointing. Checkpoints are written to
+- `training.checkpoint_every`: epoch interval for parameter checkpoints; default
+  is every epoch. Set `0` to disable checkpointing. Checkpoints are written to
   `<output-dir>/checkpoints/checkpoint_epoch_*.jls` by default.
 
 Run example:
