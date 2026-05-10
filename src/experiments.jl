@@ -635,7 +635,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
             log_every=cfgint(cfg, "training.log_every", 1),
             checkpoint_callback=_checkpoint_callback(cfg, output_dir),
-            loss_callback=_loss_stream_callback(cfg, output_dir, "diffusion_denoising_score_mse"),
+            loss_callback=_loss_stream_callback(cfg, output_dir, "diffusion_score_matching_mse"),
             rng,
         )
 
