@@ -113,6 +113,7 @@ function nonideal_param_vector(sim_cfg)
     ev = get(nonideal, "excluded_volume", Dict())
     conf = get(nonideal, "confinement", Dict())
     ring_lj = get(nonideal, "ring_lj", Dict())
+    ring_bond = get(nonideal, "ring_bond", Dict())
     return Float32[
         0.0f0,
         0.0f0,
@@ -150,6 +151,7 @@ function nonideal_param_vector(sim_cfg)
         Float32(get(ring_lj, "softening", 0.0f0)),
         Float32(get(ring_lj, "cutoff", 0.0f0)),
         get(ring_lj, "shift", true) ? 1.0f0 : 0.0f0,
+        get(ring_bond, "enabled", false) ? 1.0f0 : 0.0f0,
     ]
 end
 
@@ -204,6 +206,9 @@ function sim_config_from_experiment_config(exp_cfg; force_ideal::Bool=false)
             "softening" => cfgfloat32(exp_cfg, "nonideal.ring_lj.softening", 0.0f0),
             "cutoff" => cfgfloat32(exp_cfg, "nonideal.ring_lj.cutoff", 0.0f0),
             "shift" => cfgbool(exp_cfg, "nonideal.ring_lj.shift", true),
+        ),
+        "ring_bond" => Dict(
+            "enabled" => cfgbool(exp_cfg, "nonideal.ring_bond.enabled", false),
         ),
     )
     return Dict(

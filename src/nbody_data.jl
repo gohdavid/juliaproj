@@ -307,6 +307,7 @@ function _polymer_nonideal_params(p)
         ring_lj_softening = length(p) >= 34 ? p[34] : 0.0f0,
         ring_lj_cutoff = length(p) >= 35 ? p[35] : 0.0f0,
         ring_lj_shift = length(p) >= 36 ? p[36] > 0.5f0 : true,
+        ring_bond_enabled = length(p) >= 37 && p[37] > 0.5f0,
     )
 end
 
@@ -317,8 +318,10 @@ function _within_cutoff(r2, cutoff)
     return r2 <= cutoff * cutoff
 end
 
-function _skip_bonded(i::Int, j::Int, exclude_bonded::Bool)
-    return exclude_bonded && abs(i - j) == 1
+function _skip_bonded(i::Int, j::Int, n_atoms::Int, exclude_bonded::Bool,
+                      ring_bond_enabled::Bool)
+    return exclude_bonded &&
+           (abs(i - j) == 1 || (ring_bond_enabled && _ring_contact(i, j, n_atoms)))
 end
 
 function _hairpin_contact(i::Int, j::Int, n_atoms::Int, min_separation::Int)
@@ -344,6 +347,13 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
             score[d, i - 1] += s
         end
     end
+    if nonideal.ring_bond_enabled && n_atoms >= 3
+        @inbounds for d in 1:dim
+            s = k_score * (x[d, 1] - x[d, n_atoms])
+            score[d, 1] -= s
+            score[d, n_atoms] += s
+        end
+    end
 
     min_r2 = 1.0f-12
     @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
@@ -353,7 +363,8 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
 
         coeff = 0.0
         if nonideal.lj_enabled &&
-           !_skip_bonded(i, j, nonideal.lj_exclude_bonded) &&
+           !_skip_bonded(i, j, n_atoms, nonideal.lj_exclude_bonded,
+                         nonideal.ring_bond_enabled) &&
            _within_cutoff(raw_r2, nonideal.lj_cutoff)
             r2 = max(raw_r2 + nonideal.lj_softening^2, min_r2)
             inv_r2 = 1.0f0 / r2
@@ -365,7 +376,8 @@ function polymer_langevin_score!(score, x, diffusion::Real, k_over_xi::Real,
         end
 
         if nonideal.ev_enabled &&
-           !_skip_bonded(i, j, nonideal.ev_exclude_bonded) &&
+           !_skip_bonded(i, j, n_atoms, nonideal.ev_exclude_bonded,
+                         nonideal.ring_bond_enabled) &&
            _within_cutoff(raw_r2, nonideal.ev_cutoff)
             r2 = max(raw_r2 + nonideal.ev_softening^2, min_r2)
             power = nonideal.ev_power
@@ -449,6 +461,11 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
     @inbounds for i in 2:n_atoms, d in 1:dim
         u += coeff * (x[d, i] - x[d, i - 1])^2
     end
+    if nonideal.ring_bond_enabled && n_atoms >= 3
+        @inbounds for d in 1:dim
+            u += coeff * (x[d, 1] - x[d, n_atoms])^2
+        end
+    end
 
     min_r2 = 1.0f-12
     @inbounds for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
@@ -457,7 +474,8 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
         raw_r2 = dx1 * dx1 + dx2 * dx2
 
         if nonideal.lj_enabled &&
-           !_skip_bonded(i, j, nonideal.lj_exclude_bonded) &&
+           !_skip_bonded(i, j, n_atoms, nonideal.lj_exclude_bonded,
+                         nonideal.ring_bond_enabled) &&
            _within_cutoff(raw_r2, nonideal.lj_cutoff)
             r2 = max(raw_r2 + nonideal.lj_softening^2, min_r2)
             sig2_over_r2 = (nonideal.lj_sigma * nonideal.lj_sigma) / r2
@@ -473,7 +491,8 @@ function polymer_langevin_potential(x, diffusion::Real, k_over_xi::Real, nonidea
         end
 
         if nonideal.ev_enabled &&
-           !_skip_bonded(i, j, nonideal.ev_exclude_bonded) &&
+           !_skip_bonded(i, j, n_atoms, nonideal.ev_exclude_bonded,
+                         nonideal.ring_bond_enabled) &&
            _within_cutoff(raw_r2, nonideal.ev_cutoff)
             r2 = max(raw_r2 + nonideal.ev_softening^2, min_r2)
             r = sqrt(r2)

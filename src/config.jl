@@ -1,7 +1,7 @@
 using Dates
 using SHA
 
-export load_yaml_config, cfgget, cfgsymbol, cfgbool, cfgint, cfgfloat, cfgfloat32
+export load_yaml_config, write_yaml_config, cfgget, cfgsymbol, cfgbool, cfgint, cfgfloat, cfgfloat32
 export config_hash, config_output_dir
 
 const ConfigDict = Dict{String,Any}
@@ -53,10 +53,10 @@ end
     load_yaml_config(path)
 
 Load the small YAML subset used by experiment configs: nested maps via
-indentation plus scalar values and bracket arrays. This keeps experiment startup
-dependency-light while still allowing reproducible config files.
+indentation plus scalar values and bracket arrays. A top-level `extends` key
+loads another config relative to this file and deep-merges this file over it.
 """
-function load_yaml_config(path::AbstractString)
+function _load_yaml_config_flat(path::AbstractString)
     root = ConfigDict()
     stack = Tuple{Int,ConfigDict}[(-1, root)]
 
@@ -86,6 +86,74 @@ function load_yaml_config(path::AbstractString)
     end
 
     return root
+end
+
+function _deep_merge_config(base::AbstractDict, override::AbstractDict)
+    result = ConfigDict()
+    for (key, value) in base
+        result[String(key)] = value isa AbstractDict ?
+                              _deep_merge_config(value, ConfigDict()) :
+                              value
+    end
+    for (key, value) in override
+        key_str = String(key)
+        key_str == "extends" && continue
+        if haskey(result, key_str) &&
+           result[key_str] isa AbstractDict &&
+           value isa AbstractDict
+            result[key_str] = _deep_merge_config(result[key_str], value)
+        else
+            result[key_str] = value
+        end
+    end
+    return result
+end
+
+function _config_parent_path(path::AbstractString, parent::AbstractString)
+    return isabspath(parent) ? parent : joinpath(dirname(path), parent)
+end
+
+function load_yaml_config(path::AbstractString; _seen::Vector{String}=String[])
+    resolved_path = abspath(path)
+    if resolved_path in _seen
+        chain = join(vcat(_seen, resolved_path), " -> ")
+        error("Cyclic YAML extends chain: $chain")
+    end
+
+    cfg = _load_yaml_config_flat(resolved_path)
+    parent = get(cfg, "extends", nothing)
+    parent === nothing && return cfg
+
+    parent_cfg = load_yaml_config(_config_parent_path(resolved_path, String(parent));
+                                  _seen=vcat(_seen, resolved_path))
+    return _deep_merge_config(parent_cfg, cfg)
+end
+
+function _write_yaml_value(io::IO, key::AbstractString, value, indent::Int)
+    prefix = repeat(" ", indent)
+    if value isa AbstractDict
+        println(io, prefix, key, ":")
+        for child_key in sort!(collect(keys(value)); by=string)
+            _write_yaml_value(io, String(child_key), value[child_key], indent + 2)
+        end
+    elseif value isa AbstractVector
+        println(io, prefix, key, ": [", join(string.(value), ", "), "]")
+    elseif value === nothing
+        println(io, prefix, key, ": null")
+    elseif value isa AbstractString
+        println(io, prefix, key, ": ", value)
+    else
+        println(io, prefix, key, ": ", value)
+    end
+end
+
+function write_yaml_config(path::AbstractString, cfg::AbstractDict)
+    open(path, "w") do io
+        for key in sort!(collect(keys(cfg)); by=string)
+            _write_yaml_value(io, String(key), cfg[key], 0)
+        end
+    end
+    return path
 end
 
 function cfgget(cfg::AbstractDict, path::AbstractString, default=nothing)

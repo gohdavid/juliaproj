@@ -11,7 +11,7 @@ Naming convention:
 - `nbody_polymer_hairpin_lj_cnf_egnn.yaml`: CNF config for the stable
   hairpin-contact Rouse ensemble.
 - `nbody_polymer_ring_lj_cnf_egnn.yaml`: CNF config for the ring-closed
-  Rouse ensemble with strong closure attraction, excluded volume, and
+  Rouse ensemble with a bonded harmonic closure, excluded volume, and
   confinement.
 
 Important fields:

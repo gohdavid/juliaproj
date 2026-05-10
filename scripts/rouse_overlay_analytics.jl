@@ -70,6 +70,7 @@ function nonideal_param_vector(sim_cfg)
     conf = get(nonideal, "confinement", Dict{String,Any}())
     hairpin_lj = get(nonideal, "hairpin_lj", Dict{String,Any}())
     ring_lj = get(nonideal, "ring_lj", Dict{String,Any}())
+    ring_bond = get(nonideal, "ring_bond", Dict{String,Any}())
     return Float32[
         0.0f0,
         0.0f0,
@@ -107,6 +108,7 @@ function nonideal_param_vector(sim_cfg)
         Float32(get(ring_lj, "softening", 0.0f0)),
         Float32(get(ring_lj, "cutoff", 0.0f0)),
         get(ring_lj, "shift", true) ? 1.0f0 : 0.0f0,
+        get(ring_bond, "enabled", false) ? 1.0f0 : 0.0f0,
     ]
 end
 
@@ -163,6 +165,9 @@ function sim_config_from_experiment_config(exp_cfg)
                 "softening" => cfgfloat32(exp_cfg, "nonideal.ring_lj.softening", 0.0f0),
                 "cutoff" => cfgfloat32(exp_cfg, "nonideal.ring_lj.cutoff", 0.0f0),
                 "shift" => cfgbool(exp_cfg, "nonideal.ring_lj.shift", true),
+            ),
+            "ring_bond" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.ring_bond.enabled", false),
             ),
         ),
     )
@@ -262,7 +267,7 @@ function main()
         ("confinement", "configs/experiments/rouse_confinement.yaml"),
         ("additive", "configs/experiments/rouse_nonideal_additive.yaml"),
         ("hairpin LJ", "configs/experiments/rouse_hairpin_lj.yaml"),
-        ("ring LJ", "configs/experiments/rouse_ring_lj.yaml"),
+        ("bonded ring", "configs/experiments/rouse_ring_lj.yaml"),
     ]
     data = [load_values(label, cfg) for (label, cfg) in variants]
 

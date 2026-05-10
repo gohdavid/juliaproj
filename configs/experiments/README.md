@@ -1,17 +1,21 @@
 Raw Rouse/polymer trajectory-generation configs for
 `scripts/simulate_rouse_raw.jl`.
 
-- `rouse_base.yaml`: long 16-worker baseline Rouse run used by polymer model
-  configs.
-- `rouse_base_video.yaml`: short baseline trajectory for visual checks.
-- `rouse_*_video.yaml`: short trajectory variants for visual checks.
-- `rouse_*nonideal*.yaml`, `rouse_confinement.yaml`,
-  `rouse_excluded_volume.yaml`, `rouse_lennard_jones.yaml`,
-  `rouse_hairpin_lj.yaml`: variants with nonideal-force terms enabled or
-  staged. The hairpin LJ variant adds strong attractive native contacts between
-  mirrored bead pairs to make a more protein-like stable folded ensemble.
-- `rouse_ring_lj.yaml`: ring-initialized chain with strong end-to-end
-  attraction, excluded volume, and stronger centered confinement.
+- `rouse_base.yaml`: long 16-worker baseline Rouse run and the source of truth
+  for shared simulation settings and default nonideal-force parameters.
+- `rouse_confinement.yaml`, `rouse_excluded_volume.yaml`,
+  `rouse_lennard_jones.yaml`, `rouse_nonideal_additive.yaml`,
+  `rouse_hairpin_lj.yaml`, and `rouse_ring_lj.yaml`: inherit from
+  `rouse_base.yaml` and override only seed/log/output fields plus the knobs
+  that enable their intended interactions. This keeps LJ, excluded-volume,
+  confinement, solver, and save settings comparable across variants.
+- `rouse_*_video.yaml`: inherit from the matching analysis config and override
+  only short-run save settings, video output/log names, and
+  `parallel.workers: 1`.
+- `rouse_hairpin_lj.yaml`: additionally uses hairpin initialization and enables
+  the inherited native-contact LJ term.
+- `rouse_ring_lj.yaml`: additionally uses ring initialization and enables the
+  inherited bonded end-to-end harmonic closure.
 
 Output policy:
 

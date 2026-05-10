@@ -124,6 +124,7 @@ function nonideal_param_vector(sim_cfg)
     conf = get(nonideal, "confinement", Dict())
     hairpin_lj = get(nonideal, "hairpin_lj", Dict())
     ring_lj = get(nonideal, "ring_lj", Dict())
+    ring_bond = get(nonideal, "ring_bond", Dict())
     return Float32[
         0.0f0,
         0.0f0,
@@ -161,6 +162,7 @@ function nonideal_param_vector(sim_cfg)
         Float32(get(ring_lj, "softening", 0.0f0)),
         Float32(get(ring_lj, "cutoff", 0.0f0)),
         get(ring_lj, "shift", true) ? 1.0f0 : 0.0f0,
+        get(ring_bond, "enabled", false) ? 1.0f0 : 0.0f0,
     ]
 end
 
@@ -171,7 +173,8 @@ function nonideal_enabled(sim_cfg)
            get(get(nonideal, "excluded_volume", Dict()), "enabled", false) ||
            get(get(nonideal, "confinement", Dict()), "enabled", false) ||
            get(get(nonideal, "hairpin_lj", Dict()), "enabled", false) ||
-           get(get(nonideal, "ring_lj", Dict()), "enabled", false)
+           get(get(nonideal, "ring_lj", Dict()), "enabled", false) ||
+           get(get(nonideal, "ring_bond", Dict()), "enabled", false)
 end
 
 function analytic_potential(x, diffusion::Real, k_over_xi::Real, sim_cfg)
@@ -460,6 +463,9 @@ function sim_config_from_experiment_config(exp_cfg)
                 "softening" => cfgfloat32(exp_cfg, "nonideal.ring_lj.softening", 0.0f0),
                 "cutoff" => cfgfloat32(exp_cfg, "nonideal.ring_lj.cutoff", 0.0f0),
                 "shift" => cfgbool(exp_cfg, "nonideal.ring_lj.shift", true),
+            ),
+            "ring_bond" => Dict(
+                "enabled" => cfgbool(exp_cfg, "nonideal.ring_bond.enabled", false),
             ),
         ),
     )

@@ -92,9 +92,9 @@ function output_paths(raw_cfg)
     return output_path, hdf5_path
 end
 
-function copy_config_snapshot(cfg_path::AbstractString, out_dir::AbstractString)
+function copy_config_snapshot(raw_cfg, out_dir::AbstractString)
     mkpath(out_dir)
-    cp(cfg_path, joinpath(out_dir, "config.yaml"); force=true)
+    BoltzFlow.write_yaml_config(joinpath(out_dir, "config.yaml"), raw_cfg)
     return nothing
 end
 
@@ -256,6 +256,7 @@ function build_nonideal_params(raw_cfg)
     ring_lj_softening = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.softening", 0.0)
     ring_lj_cutoff = BoltzFlow.cfgfloat(raw_cfg, "nonideal.ring_lj.cutoff", 0.0)
     ring_lj_shift = cfgflag(raw_cfg, "nonideal.ring_lj.shift", true)
+    ring_bond_enabled = cfgflag(raw_cfg, "nonideal.ring_bond.enabled", false)
 
     init_mode = initialization_mode_code(raw_cfg)
     init_separation = BoltzFlow.cfgfloat(raw_cfg, "rouse.hairpin_separation",
@@ -296,6 +297,7 @@ function build_nonideal_params(raw_cfg)
         ring_lj_softening,
         ring_lj_cutoff,
         ring_lj_shift ? 1.0 : 0.0,
+        ring_bond_enabled ? 1.0 : 0.0,
     ]
     config = Dict(
         "lennard_jones" => Dict(
@@ -337,6 +339,9 @@ function build_nonideal_params(raw_cfg)
             "softening" => ring_lj_softening,
             "cutoff" => ring_lj_cutoff,
             "shift" => ring_lj_shift,
+        ),
+        "ring_bond" => Dict(
+            "enabled" => ring_bond_enabled,
         ),
         "initialization" => Dict(
             "mode" => init_mode == 1 ? "hairpin" : init_mode == 2 ? "ring" : "random",
@@ -444,7 +449,7 @@ function main()
     log_progress = BoltzFlow.cfgbool(raw_cfg, "logging.progress", true)
     progress_steps = BoltzFlow.cfgint(raw_cfg, "logging.progress_steps", 10_000)
     output_path, hdf5_path = output_paths(raw_cfg)
-    copy_config_snapshot(cfg_path, dirname(output_path))
+    copy_config_snapshot(raw_cfg, dirname(output_path))
     nonideal_params, nonideal_config = build_nonideal_params(raw_cfg)
 
     tau_r = rouse_relaxation_time(n_beads, k_over_xi)

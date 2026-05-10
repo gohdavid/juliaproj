@@ -1,53 +1,13 @@
-seed: 24
+extends: rouse_nonideal_additive.yaml
 
 parallel:
-  workers: 16
-  seed_stride: 1
-  julia_num_threads: 1
+  workers: 1
   log_dir: logs/rouse_nonideal_additive_video
-
-rouse:
-  dim: 2
-  n_beads: 32
-  diffusion: 1.0
-  bond_length: 1.0
-  k_over_xi: 3.0
-
-nonideal:
-  lennard_jones:
-    enabled: true
-    epsilon: 0.03
-    sigma: 0.85
-    softening: 0.5
-    cutoff: 2.0
-    exclude_bonded: true
-    shift: true
-  excluded_volume:
-    enabled: true
-    epsilon: 0.03
-    sigma: 1.0
-    softening: 0.3
-    power: 12.0
-    cutoff: 1.5
-    exclude_bonded: true
-  confinement:
-    enabled: true
-    strength: 0.01
-    centered: true
-
-solver:
-  algorithm: EM
-  dt: 0.0005
 
 save:
   burn_in_tau: 0.0
   until_tau: 5.0
   interval_tau: 0.01
-  write_hdf5: true
-  write_jls: false
 
 output:
-  dir: outputs
   experiment_name: rouse_nonideal_additive_video
-  file: traj.jls
-  hdf5_file: trajectories/traj.h5
