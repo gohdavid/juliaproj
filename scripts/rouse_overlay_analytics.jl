@@ -267,7 +267,7 @@ function main()
         ("confinement", "configs/experiments/rouse_confinement.yaml"),
         ("additive", "configs/experiments/rouse_nonideal_additive.yaml"),
         ("hairpin LJ", "configs/experiments/rouse_hairpin_lj.yaml"),
-        ("bonded ring", "configs/experiments/rouse_ring_lj.yaml"),
+        ("bonded ring", "configs/experiments/rouse_ring_bond.yaml"),
     ]
     data = [load_values(label, cfg) for (label, cfg) in variants]
 

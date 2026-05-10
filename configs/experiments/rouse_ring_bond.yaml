@@ -2,7 +2,7 @@ extends: rouse_base.yaml
 seed: 26
 
 parallel:
-  log_dir: logs/rouse_ring_lj
+  log_dir: logs/rouse_ring_bond
 
 rouse:
   initialization: ring
@@ -17,4 +17,4 @@ nonideal:
     enabled: true
 
 output:
-  experiment_name: rouse_ring_lj
+  experiment_name: rouse_ring_bond

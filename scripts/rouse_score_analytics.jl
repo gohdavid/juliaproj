@@ -225,11 +225,21 @@ function chain_points(x)
     return Point2f.(x[1, :], x[2, :])
 end
 
+function draw_chain!(ax, pts, n_beads::Int; draw_ring_bond::Bool=false)
+    lines!(ax, pts, color=:gray20, linewidth=4)
+    if draw_ring_bond && n_beads > 2
+        lines!(ax, Point2f[pts[end], pts[1]], color=:gray55,
+               linewidth=4)
+    end
+    scatter!(ax, pts, color=1:n_beads, colormap=:viridis,
+             markersize=16, strokewidth=0)
+end
+
 function axis_limits(traj; pad=0.18f0)
     return (-10.0f0, 10.0f0), (-10.0f0, 10.0f0)
 end
 
-function save_chain_frames(traj, times, tau_r, frame_dir)
+function save_chain_frames(traj, times, tau_r, frame_dir; draw_ring_bond::Bool=false)
     mkpath(frame_dir)
     xlims, ylims = axis_limits(traj)
     n_frames = size(traj, 3)
@@ -243,15 +253,14 @@ function save_chain_frames(traj, times, tau_r, frame_dir)
         xlims!(ax, xlims...)
         ylims!(ax, ylims...)
         pts = chain_points(traj[:, :, frame])
-        lines!(ax, pts, color=:gray20, linewidth=4)
-        scatter!(ax, pts, color=1:n_beads, colormap=:viridis,
-                 markersize=16, strokewidth=0)
+        draw_chain!(ax, pts, n_beads; draw_ring_bond)
         save(joinpath(frame_dir, @sprintf("frame_%05d.png", frame)), fig)
     end
     return frame_dir
 end
 
-function record_gif(traj, times, tau_r, gif_path; framerate=24)
+function record_gif(traj, times, tau_r, gif_path; framerate=24,
+                    draw_ring_bond::Bool=false)
     xlims, ylims = axis_limits(traj)
     n_beads = size(traj, 2)
     frame_ids = collect(axes(traj, 3))
@@ -264,9 +273,7 @@ function record_gif(traj, times, tau_r, gif_path; framerate=24)
     record(fig, gif_path, frame_ids; framerate) do frame
         empty!(ax)
         pts = chain_points(traj[:, :, frame])
-        lines!(ax, pts, color=:gray20, linewidth=4)
-        scatter!(ax, pts, color=1:n_beads, colormap=:viridis,
-                 markersize=16, strokewidth=0)
+        draw_chain!(ax, pts, n_beads; draw_ring_bond)
         text!(ax, xlims[1] + 0.04 * (xlims[2] - xlims[1]),
               ylims[2] - 0.06 * (ylims[2] - ylims[1]),
               text=@sprintf("t = %.2fτR", times[frame] / tau_r), fontsize=24)
@@ -565,9 +572,11 @@ function make_video_outputs(payload, out_dir, plot_cfg)
                                  "output.mp4_file", "rouse_raw.mp4") :
                nothing
     framerate = cfgint(plot_cfg, "video.framerate", 24)
+    ring_bond_cfg = get(get(sim_cfg, "nonideal", Dict()), "ring_bond", Dict())
+    draw_ring_bond = Bool(get(ring_bond_cfg, "enabled", false))
 
-    save_chain_frames(traj, times, tau_r, frame_dir)
-    record_gif(traj, times, tau_r, gif_path; framerate)
+    save_chain_frames(traj, times, tau_r, frame_dir; draw_ring_bond)
+    record_gif(traj, times, tau_r, gif_path; framerate, draw_ring_bond)
     assembled_video = mp4_path === nothing ? nothing :
                       assemble_video(frame_dir, mp4_path; framerate)
 

@@ -1,4 +1,4 @@
-extends: rouse_ring_lj.yaml
+extends: rouse_ring_bond.yaml
 
 parallel:
   workers: 1

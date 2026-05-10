@@ -5,7 +5,7 @@ Raw Rouse/polymer trajectory-generation configs for
   for shared simulation settings and default nonideal-force parameters.
 - `rouse_confinement.yaml`, `rouse_excluded_volume.yaml`,
   `rouse_lennard_jones.yaml`, `rouse_nonideal_additive.yaml`,
-  `rouse_hairpin_lj.yaml`, and `rouse_ring_lj.yaml`: inherit from
+  `rouse_hairpin_lj.yaml`, and `rouse_ring_bond.yaml`: inherit from
   `rouse_base.yaml` and override only seed/log/output fields plus the knobs
   that enable their intended interactions. This keeps LJ, excluded-volume,
   confinement, solver, and save settings comparable across variants.
@@ -14,7 +14,7 @@ Raw Rouse/polymer trajectory-generation configs for
   `parallel.workers: 1`.
 - `rouse_hairpin_lj.yaml`: additionally uses hairpin initialization and enables
   the inherited native-contact LJ term.
-- `rouse_ring_lj.yaml`: additionally uses ring initialization and enables the
+- `rouse_ring_bond.yaml`: additionally uses ring initialization and enables the
   inherited bonded end-to-end harmonic closure.
 
 Output policy:

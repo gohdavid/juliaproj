@@ -354,7 +354,9 @@ end
 
 function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim::Int,
                               n_beads::Int, hdf5_path::AbstractString;
-                              progress::Bool=true, progress_steps::Int=10_000)
+                              adaptive::Bool=false, reltol::Real=1.0e-3,
+                              abstol::Real=1.0e-6, progress::Bool=true,
+                              progress_steps::Int=10_000)
     traj = zeros(Float32, dim, n_beads, length(save_times))
     times = zeros(Float64, length(save_times))
     next_frame = Ref(1)
@@ -397,7 +399,7 @@ function solve_streaming_hdf5(prob, solver, dt::Real, save_times, save_tau, dim:
         callback = PresetTimeCallback(callback_times, affect!;
                                       save_positions=(false, false))
 
-        solve(prob, solver; dt=dt, adaptive=false, callback,
+        solve(prob, solver; dt=dt, adaptive, reltol, abstol, callback,
               save_everystep=false, save_start=false, save_end=false,
               progress, progress_steps)
     end
@@ -436,6 +438,9 @@ function main()
     solver_algorithm = String(BoltzFlow.cfgget(raw_cfg, "solver.algorithm", "EM"))
     solver = sde_solver(solver_algorithm)
     dt = BoltzFlow.cfgfloat(raw_cfg, "solver.dt", 0.01)
+    solver_adaptive = BoltzFlow.cfgbool(raw_cfg, "solver.adaptive", false)
+    solver_reltol = BoltzFlow.cfgfloat(raw_cfg, "solver.reltol", 1.0e-3)
+    solver_abstol = BoltzFlow.cfgfloat(raw_cfg, "solver.abstol", 1.0e-6)
     burn_in_tau = BoltzFlow.cfgfloat(raw_cfg, "save.burn_in_tau", 0.0)
     until_tau = BoltzFlow.cfgfloat(raw_cfg, "save.until_tau", 5.0)
     interval_tau = BoltzFlow.cfgfloat(raw_cfg, "save.interval_tau", 0.05)
@@ -473,10 +478,14 @@ function main()
     traj, times = with_logger(logger) do
         if write_hdf5
             solve_streaming_hdf5(prob, solver, dt64, save_times, save_tau, dim, n_beads,
-                                 hdf5_path; progress=log_progress,
+                                 hdf5_path; adaptive=solver_adaptive,
+                                 reltol=solver_reltol, abstol=solver_abstol,
+                                 progress=log_progress,
                                  progress_steps=progress_steps)
         else
-            sol = solve(prob, solver; dt=dt64, saveat=save_times, adaptive=false,
+            sol = solve(prob, solver; dt=dt64, saveat=save_times,
+                        adaptive=solver_adaptive, reltol=solver_reltol,
+                        abstol=solver_abstol,
                         progress=log_progress, progress_steps=progress_steps)
             (solution_to_traj(sol, dim, n_beads), Float64.(sol.t))
         end
@@ -513,6 +522,7 @@ function main()
     write_hdf5 && println("Saved HDF5 trajectory:     $hdf5_path")
     @printf "config: %s\n" cfg_path
     @printf "solver: %s\n" solver_algorithm
+    @printf "adaptive: %s reltol: %.1e abstol: %.1e\n" solver_adaptive solver_reltol solver_abstol
     @printf "tau_R: %.4f\n" tau_r
     @printf "burn-in: %.1f tau_R\n" burn_in_tau
     @printf "frames: %d every %.3f tau_R through %.1f tau_R after burn-in\n" size(traj, 3) interval_tau until_tau
