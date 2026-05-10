@@ -13,7 +13,7 @@ logging:
 rouse:
   dim: 2
   n_beads: 32
-  diffusion: 1.0
+  diffusion: 0.25
   bond_length: 1.0
   k_over_xi: 3.0
 

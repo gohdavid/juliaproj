@@ -225,6 +225,20 @@ function chain_points(x)
     return Point2f.(x[1, :], x[2, :])
 end
 
+function center_frames(traj)
+    return traj .- mean(traj; dims=2)
+end
+
+function normalize_video_traj(traj, plot_cfg)
+    cfgbool(plot_cfg, "video.center", true) && (traj = center_frames(traj))
+    cfgbool(plot_cfg, "video.normalize", false) || return traj, Float32(1.0)
+
+    eps = cfgfloat32(plot_cfg, "video.normalization_eps", 1.0f-6)
+    scale = Float32(sqrt(mean(abs2, traj)))
+    scale = max(scale, eps)
+    return traj ./ scale, scale
+end
+
 function draw_chain!(ax, pts, n_beads::Int; draw_ring_bond::Bool=false)
     lines!(ax, pts, color=:gray20, linewidth=4)
     if draw_ring_bond && n_beads > 2
@@ -236,7 +250,14 @@ function draw_chain!(ax, pts, n_beads::Int; draw_ring_bond::Bool=false)
 end
 
 function axis_limits(traj; pad=0.18f0)
-    return (-10.0f0, 10.0f0), (-10.0f0, 10.0f0)
+    xmin, xmax = extrema(Float32.(traj[1, :, :]))
+    ymin, ymax = extrema(Float32.(traj[2, :, :]))
+    span = max(xmax - xmin, ymax - ymin, 1.0f0)
+    xmid = (xmin + xmax) / 2.0f0
+    ymid = (ymin + ymax) / 2.0f0
+    half_width = (0.5f0 + pad) * span
+    return (xmid - half_width, xmid + half_width),
+           (ymid - half_width, ymid + half_width)
 end
 
 function save_chain_frames(traj, times, tau_r, frame_dir; draw_ring_bond::Bool=false)
@@ -573,7 +594,7 @@ function plot_output_dir(plot_cfg, data_dir::AbstractString)
 end
 
 function make_video_outputs(payload, out_dir, plot_cfg)
-    traj = payload["traj"]
+    traj, video_scale = normalize_video_traj(payload["traj"], plot_cfg)
     times = payload["times"]
     sim_cfg = payload["config"]
     tau_r = sim_cfg["tau_r"]
@@ -598,6 +619,9 @@ function make_video_outputs(payload, out_dir, plot_cfg)
                       assemble_video(frame_dir, mp4_path; framerate)
 
     println("Saved frame directory: $frame_dir")
+    if cfgbool(plot_cfg, "video.normalize", false)
+        @printf "video normalization scale: %.6g\n" video_scale
+    end
     if assembled_video !== nothing
         println("Saved video:           $assembled_video")
     else

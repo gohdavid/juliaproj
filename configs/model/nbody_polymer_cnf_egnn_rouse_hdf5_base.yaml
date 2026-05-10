@@ -14,7 +14,7 @@ data:
   source_pattern: traj_seed*.h5
   allow_partial: false
   center: true
-  normalize: true
+  normalize: false
   normalization_mode: scalar
   normalization_eps: 1.0e-6
 
@@ -24,19 +24,23 @@ model:
   equivariant: true
   node_embedding_dim: 8
   egnn_layers: 3
-  hidden_dims: [64, 64, 64]
-  trace: fd_hutchinson
+  hidden_dims: [256, 256, 256]
+  trace: hutchinson_jvp
 
 ode:
   t0: 0.0
   t1: 1.0
+  solver: tsit5
+  adaptive: true
+  dt: 1.0e-5
   abstol: 3.0e-4
   reltol: 3.0e-4
 
 training:
   epochs: 60
-  batch_size: 64
-  learning_rate: 1.0e-3
+  batch_size: 128
+  learning_rate: 2.0e-3
+  gpu_data: true
   log_every: 16
   checkpoint_every: 1
 

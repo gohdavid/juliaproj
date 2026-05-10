@@ -4,5 +4,5 @@ experiment:
   name: nbody_polymer_cnf_egnn_rouse_hdf5
 
 data:
-  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/e6a343e8490d/trajectories
+  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/f5ecf974b2a8/trajectories
   physics_params: [1.0, 1.0, 3.0]

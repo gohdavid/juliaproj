@@ -11,6 +11,9 @@ analysis:
 
 video:
   framerate: 60
+  center: true
+  normalize: true
+  normalization_eps: 1.0e-6
 
 output:
   dir: outputs

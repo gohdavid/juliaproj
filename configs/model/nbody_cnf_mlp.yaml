@@ -18,7 +18,7 @@ model:
   name: cnf_mlp
   kind: mlp
   equivariant: false
-  hidden_dims: [64, 64, 64]
+  hidden_dims: [256, 256, 256]
   trace: hutchinson
 
 ode:

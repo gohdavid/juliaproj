@@ -29,6 +29,10 @@ function _device_from_config(cfg)
 
     strict_gpu = cfgbool(cfg, "runtime.strict_gpu", false)
     try
+        device_id = cfgget(cfg, "runtime.device_id", nothing)
+        if device_id !== nothing
+            CUDA.device!(Int(device_id))
+        end
         CUDA.zeros(Float32, 1)
         return CUDA.cu
     catch err
@@ -76,6 +80,20 @@ function _log_parameter_count(family::AbstractString, params)
     return count
 end
 
+function _ode_solver_from_config(cfg)
+    solver = cfgsymbol(cfg, "ode.solver", "tsit5")
+    solver == :tsit5 && return Tsit5()
+    solver == :rk4 && return RK4()
+    error("Unsupported ode.solver: $solver")
+end
+
+function _trace_mode_from_config(cfg)
+    trace = cfgsymbol(cfg, "model.trace", "hutchinson")
+    trace == :hutchinson_ad && return :hutchinson_jvp
+    trace == :fd_hutchinson && return :hutchinson_fd
+    return trace
+end
+
 function _make_context(cfg, field, device)
     t0 = cfgfloat32(cfg, "ode.t0", 0.0)
     t1 = cfgfloat32(cfg, "ode.t1", 1.0)
@@ -83,10 +101,12 @@ function _make_context(cfg, field, device)
         field,
         device,
         (t0, t1),
-        Tsit5(),
+        _ode_solver_from_config(cfg),
         cfgfloat32(cfg, "ode.abstol", 1f-5),
         cfgfloat32(cfg, "ode.reltol", 1f-5),
-        cfgsymbol(cfg, "model.trace", "hutchinson"),
+        cfgfloat32(cfg, "ode.dt", 1f-5),
+        cfgbool(cfg, "ode.adaptive", true),
+        _trace_mode_from_config(cfg),
     )
 end
 
@@ -186,6 +206,31 @@ function _atomic_serialize(path::AbstractString, value)
     return path
 end
 
+mutable struct _LossStreamCallback
+    path::String
+    cfg
+    loss_kind::String
+    records::Vector{Dict{String,Any}}
+    dirty::Bool
+end
+
+function (callback::_LossStreamCallback)(; epoch, batch, step, total_steps, loss,
+                                         gradient_norm=nothing)
+    record = Dict{String,Any}(
+        "epoch" => epoch,
+        "batch" => batch,
+        "step" => step,
+        "total_steps" => total_steps,
+        "loss" => Float32(loss),
+    )
+    if gradient_norm !== nothing
+        record["gradient_norm"] = Float32(gradient_norm)
+    end
+    push!(callback.records, record)
+    callback.dirty = true
+    return callback.path
+end
+
 function _loss_stream_callback(cfg, output_dir::AbstractString, loss_kind::AbstractString)
     path = joinpath(output_dir, "losses.jls")
     records = Vector{Dict{String,Any}}()
@@ -197,34 +242,30 @@ function _loss_stream_callback(cfg, output_dir::AbstractString, loss_kind::Abstr
             @warn "Could not load previous loss stream for resume" path exception=(err, catch_backtrace())
         end
     end
-
-    return function (; epoch, batch, step, total_steps, loss, gradient_norm=nothing)
-        record = Dict{String,Any}(
-            "epoch" => epoch,
-            "batch" => batch,
-            "step" => step,
-            "total_steps" => total_steps,
-            "loss" => Float32(loss),
-        )
-        if gradient_norm !== nothing
-            record["gradient_norm"] = Float32(gradient_norm)
-        end
-        push!(records, record)
-        _atomic_serialize(path, Dict{String,Any}(
-            "config" => cfg,
-            "loss_kind" => String(loss_kind),
-            "losses" => Float32[record["loss"] for record in records],
-            "gradient_norms" => Float32[
-                get(record, "gradient_norm", Float32(NaN)) for record in records
-            ],
-            "records" => records,
-            "updated_at" => Dates.now(),
-        ))
-        return path
-    end
+    return _LossStreamCallback(path, cfg, String(loss_kind), records, false)
 end
 
-function _checkpoint_callback(cfg, output_dir::AbstractString)
+function _flush_loss_stream!(callback)
+    callback === nothing && return nothing
+    callback isa _LossStreamCallback || return nothing
+    callback.dirty || return callback.path
+    records = callback.records
+    path = callback.path
+    _atomic_serialize(path, Dict{String,Any}(
+        "config" => callback.cfg,
+        "loss_kind" => callback.loss_kind,
+        "losses" => Float32[record["loss"] for record in records],
+        "gradient_norms" => Float32[
+            get(record, "gradient_norm", Float32(NaN)) for record in records
+        ],
+        "records" => records,
+        "updated_at" => Dates.now(),
+    ))
+    callback.dirty = false
+    return path
+end
+
+function _checkpoint_callback(cfg, output_dir::AbstractString; loss_callback=nothing)
     checkpoint_every = cfgint(cfg, "training.checkpoint_every", 1)
     checkpoint_every > 0 || return nothing
 
@@ -253,6 +294,7 @@ function _checkpoint_callback(cfg, output_dir::AbstractString)
             path = joinpath(checkpoint_dir, "latest.jls")
             serialize(path, checkpoint)
         end
+        _flush_loss_stream!(loss_callback)
         @info "checkpoint saved" epoch path
         return path
     end
@@ -548,6 +590,10 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
         resume_checkpoint = _resume_checkpoint(cfg, output_dir)
         normalizer = _fit_or_restore_data_normalizer!(cfg, train_data, resume_checkpoint)
         train_model_data = apply_data_normalizer(train_data, normalizer)
+        if cfgbool(cfg, "training.gpu_data", cfgbool(cfg, "runtime.use_gpu", false))
+            train_model_data = train_model_data |> device
+            @info "training data moved to training device" bytes=sizeof(train_model_data)
+        end
         start_epoch = 0
         opt_state = nothing
         previous_losses = Float32[]
@@ -563,19 +609,22 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
         end
         _log_parameter_count("nbody_cnf", params)
 
+        loss_callback = _loss_stream_callback(cfg, output_dir, "cnf_negative_log_likelihood")
+        checkpoint_callback = _checkpoint_callback(cfg, output_dir; loss_callback)
         params, _, losses = train_cnf_adam(
             ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 5f-3),
             log_every=cfgint(cfg, "training.log_every", 1),
-            checkpoint_callback=_checkpoint_callback(cfg, output_dir),
-            loss_callback=_loss_stream_callback(cfg, output_dir, "cnf_negative_log_likelihood"),
+            checkpoint_callback,
+            loss_callback,
             opt_state,
             loss_history=previous_losses,
             start_epoch,
             rng,
         )
+        _flush_loss_stream!(loss_callback)
         samples = generate_normalized_cnf_samples(
             ctx, params, cfgint(cfg, "sampling.n_samples", 1000), normalizer; rng)
 
@@ -630,16 +679,19 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=n
         params = init_fm_params(rng, field; device)
         _log_parameter_count("nbody_flow_matching", params)
 
+        loss_callback = _loss_stream_callback(cfg, output_dir, "flow_matching_velocity_mse")
+        checkpoint_callback = _checkpoint_callback(cfg, output_dir; loss_callback)
         params, _, losses = train_flow_matching_adam(
             ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
             log_every=cfgint(cfg, "training.log_every", 1),
-            checkpoint_callback=_checkpoint_callback(cfg, output_dir),
-            loss_callback=_loss_stream_callback(cfg, output_dir, "flow_matching_velocity_mse"),
+            checkpoint_callback,
+            loss_callback,
             rng,
         )
+        _flush_loss_stream!(loss_callback)
 
         samples = center_positions(invert_data_normalizer(
             generate_flow_matching_samples(
@@ -687,16 +739,19 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
         params = init_diffusion_params(rng, model; device)
         _log_parameter_count("nbody_diffusion", params)
 
+        loss_callback = _loss_stream_callback(cfg, output_dir, "diffusion_score_matching_mse")
+        checkpoint_callback = _checkpoint_callback(cfg, output_dir; loss_callback)
         params, _, losses = train_diffusion_adam(
             ctx, params, train_model_data;
             epochs=cfgint(cfg, "training.epochs", 10),
             batch_size=cfgint(cfg, "training.batch_size", 64),
             learning_rate=cfgfloat32(cfg, "training.learning_rate", 1f-3),
             log_every=cfgint(cfg, "training.log_every", 1),
-            checkpoint_callback=_checkpoint_callback(cfg, output_dir),
-            loss_callback=_loss_stream_callback(cfg, output_dir, "diffusion_score_matching_mse"),
+            checkpoint_callback,
+            loss_callback,
             rng,
         )
+        _flush_loss_stream!(loss_callback)
 
         samples = center_positions(invert_data_normalizer(
             generate_diffusion_samples(

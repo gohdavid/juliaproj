@@ -1,7 +1,7 @@
 extends: nbody_polymer_cnf_egnn_rouse_hdf5_base.yaml
 
 experiment:
-  name: nbody_cnf_egnn_check_2layer
+  name: nbody_cnf_egnn_check_3layer
 
 data:
   kind: checkmark_synthetic
@@ -13,6 +13,6 @@ data:
   center: false
 
 model:
-  name: cnf_egnn_check_2layer
-  egnn_layers: 2
-  hidden_dims: [32, 32, 32]
+  name: cnf_egnn_check_3layer
+  egnn_layers: 3
+  hidden_dims: [256, 256, 256]
