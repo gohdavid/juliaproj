@@ -27,7 +27,7 @@ model:
 training:
   epochs: 60
   batch_size: 64
-  learning_rate: 5.0e-5
+  learning_rate: 1.0e-3
   log_every: 16
   checkpoint_every: 5
 

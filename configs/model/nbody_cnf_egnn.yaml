@@ -22,8 +22,9 @@ model:
   name: cnf_egnn
   kind: egnn
   equivariant: true
+  egnn_layers: 3
   hidden_dims: [128, 128, 128]
-  trace: exact
+  trace: fd_hutchinson
 
 ode:
   t0: 0.0
@@ -34,7 +35,7 @@ ode:
 training:
   epochs: 60
   batch_size: 64
-  learning_rate: 5.0e-5
+  learning_rate: 1.0e-3
   log_every: 16
   checkpoint_every: 5
 

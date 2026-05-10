@@ -1,7 +1,6 @@
 #!/usr/bin/env julia
 
 using Dates
-using Printf
 using Random
 using Serialization
 
@@ -18,14 +17,17 @@ function usage()
       julia --project=. scripts/sample_checkpoint_conformations.jl [options]
 
     Options:
-      --checkpoint PATH       Checkpoint .jls file to sample from.
+      --checkpoint VALUE      Checkpoint to sample from. Accepts a full path,
+                              a filename in --checkpoint-dir, or an epoch number.
+                              Default: most recent checkpoint in --checkpoint-dir.
       --checkpoint-dir DIR    Directory with checkpoint_epoch_*.jls files.
                               Defaults to the finished hairpin LJ run.
       --n-samples N           Number of conformations to generate. Default: 1000.
       --batch-size N          Sampling batch size. Default: 64.
       --seed N                RNG seed. Default: checkpoint experiment seed, or 0.
       --output-dir DIR        Output directory. Default: <run>/samples/<checkpoint-stem>.
-      --output-file NAME      Serialized output filename. Default: conformations.jls.
+      --output-file NAME      Serialized output filename.
+                              Default: <checkpoint-stem>_samples.jls.
       --help                  Show this message.
 
     Output:
@@ -39,7 +41,6 @@ function parse_args(args)
         "checkpoint_dir" => DEFAULT_CHECKPOINT_DIR,
         "n_samples" => 1000,
         "batch_size" => 64,
-        "output_file" => "conformations.jls",
     )
 
     i = 1
@@ -66,6 +67,10 @@ function parse_args(args)
     return opts
 end
 
+function checkpoint_epoch_path(checkpoint_dir::AbstractString, epoch::Integer)
+    return joinpath(checkpoint_dir, "checkpoint_epoch_$(lpad(epoch, 6, '0')).jls")
+end
+
 function latest_checkpoint(checkpoint_dir::AbstractString)
     isdir(checkpoint_dir) || error("checkpoint dir does not exist: $checkpoint_dir")
     candidates = sort([
@@ -77,11 +82,33 @@ function latest_checkpoint(checkpoint_dir::AbstractString)
     return last(candidates)
 end
 
+function resolve_checkpoint(value::AbstractString, checkpoint_dir::AbstractString)
+    if isfile(value)
+        return value
+    end
+
+    epoch = tryparse(Int, value)
+    if epoch !== nothing
+        path = checkpoint_epoch_path(checkpoint_dir, epoch)
+        isfile(path) || error("checkpoint epoch $epoch does not exist: $path")
+        return path
+    end
+
+    path = joinpath(checkpoint_dir, value)
+    isfile(path) || error("checkpoint does not exist as path or checkpoint-dir entry: $value")
+    return path
+end
+
 function default_output_dir(checkpoint_path::AbstractString)
     checkpoint_dir = dirname(checkpoint_path)
     run_dir = dirname(checkpoint_dir)
     stem = splitext(basename(checkpoint_path))[1]
     return joinpath(run_dir, "samples", stem)
+end
+
+function default_output_file(checkpoint_path::AbstractString)
+    stem = splitext(basename(checkpoint_path))[1]
+    return "$(stem)_samples.jls"
 end
 
 function cfg_value(cfg::AbstractDict, path::AbstractString, default=nothing)
@@ -97,9 +124,10 @@ function cfg_value(cfg::AbstractDict, path::AbstractString, default=nothing)
 end
 
 function sample_checkpoint_conformations(opts)
+    checkpoint_dir = String(opts["checkpoint_dir"])
     checkpoint_path = haskey(opts, "checkpoint") ?
-                      String(opts["checkpoint"]) :
-                      latest_checkpoint(String(opts["checkpoint_dir"]))
+                      resolve_checkpoint(String(opts["checkpoint"]), checkpoint_dir) :
+                      latest_checkpoint(checkpoint_dir)
     isfile(checkpoint_path) || error("checkpoint does not exist: $checkpoint_path")
 
     checkpoint = deserialize(checkpoint_path)
@@ -133,7 +161,8 @@ function sample_checkpoint_conformations(opts)
 
     output_dir = String(get(opts, "output_dir", default_output_dir(checkpoint_path)))
     mkpath(output_dir)
-    output_path = joinpath(output_dir, String(opts["output_file"]))
+    output_file = String(get(opts, "output_file", default_output_file(checkpoint_path)))
+    output_path = joinpath(output_dir, output_file)
     payload = Dict{String,Any}(
         "samples" => samples,
         "checkpoint_path" => checkpoint_path,

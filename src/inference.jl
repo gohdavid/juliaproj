@@ -66,6 +66,7 @@ function _cnf_context_from_config(cfg::Dict{String,Any}, device)
         n_atoms=data_cfg.n_atoms,
         hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
         node_embedding_dim=cfgint(cfg, "model.node_embedding_dim", min(16, data_cfg.n_atoms)),
+        n_layers=cfgint(cfg, "model.egnn_layers", 0),
     )
     return _make_context(cfg, field, device), data_cfg
 end

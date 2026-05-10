@@ -4,6 +4,7 @@ Naming convention:
 
 - `cnf_mlp`: non-equivariant CNF MLP.
 - `cnf_egnn`: equivariant CNF.
+- `cnf_egnn_1m`: equivariant CNF with about 1M parameters.
 - `diffusion_egnn`: equivariant diffusion/score model.
 - `flow_matching_egnn`: equivariant conditional flow-matching model.
 - `nbody_polymer_*`: same model family trained on Rouse HDF5 snapshots instead

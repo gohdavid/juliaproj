@@ -62,6 +62,20 @@ function _data_config(cfg)
     )
 end
 
+_parameter_count(params::AbstractArray) = length(params)
+_parameter_count(params::Number) = 1
+_parameter_count(params::NamedTuple) =
+    sum(_parameter_count(getfield(params, key)) for key in keys(params); init=0)
+_parameter_count(params::Tuple) =
+    sum(_parameter_count(value) for value in params; init=0)
+_parameter_count(params) = 0
+
+function _log_parameter_count(family::AbstractString, params)
+    count = _parameter_count(params)
+    @info "model_parameter_count" family parameters=count
+    return count
+end
+
 function _make_context(cfg, field, device)
     t0 = cfgfloat32(cfg, "ode.t0", 0.0)
     t1 = cfgfloat32(cfg, "ode.t1", 1.0)
@@ -184,18 +198,25 @@ function _loss_stream_callback(cfg, output_dir::AbstractString, loss_kind::Abstr
         end
     end
 
-    return function (; epoch, batch, step, total_steps, loss)
-        push!(records, Dict{String,Any}(
+    return function (; epoch, batch, step, total_steps, loss, gradient_norm=nothing)
+        record = Dict{String,Any}(
             "epoch" => epoch,
             "batch" => batch,
             "step" => step,
             "total_steps" => total_steps,
             "loss" => Float32(loss),
-        ))
+        )
+        if gradient_norm !== nothing
+            record["gradient_norm"] = Float32(gradient_norm)
+        end
+        push!(records, record)
         _atomic_serialize(path, Dict{String,Any}(
             "config" => cfg,
             "loss_kind" => String(loss_kind),
             "losses" => Float32[record["loss"] for record in records],
+            "gradient_norms" => Float32[
+                get(record, "gradient_norm", Float32(NaN)) for record in records
+            ],
             "records" => records,
             "updated_at" => Dates.now(),
         ))
@@ -471,6 +492,7 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
             n_atoms=data_cfg.n_atoms,
             hidden_dims=Int.(cfgget(cfg, "model.hidden_dims", [64, 64, 64])),
             node_embedding_dim=cfgint(cfg, "model.node_embedding_dim", min(16, data_cfg.n_atoms)),
+            n_layers=cfgint(cfg, "model.egnn_layers", 0),
         )
         ctx = _make_context(cfg, field, device)
         params = init_cnf_params(rng, field; device)
@@ -488,6 +510,7 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
             opt_state = opt_state === nothing ? nothing : opt_state |> device
             previous_losses = Float32.(get(resume_checkpoint, "losses", Float32[]))
         end
+        _log_parameter_count("nbody_cnf", params)
 
         params, _, losses = train_cnf_adam(
             ctx, params, train_data;
@@ -551,6 +574,7 @@ function run_nbody_flow_matching_experiment(cfg::Dict{String,Any}; config_path=n
             cfgint(cfg, "sampling.steps", 64),
         )
         params = init_fm_params(rng, field; device)
+        _log_parameter_count("nbody_flow_matching", params)
 
         params, _, losses = train_flow_matching_adam(
             ctx, params, train_data;
@@ -602,6 +626,7 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
         sample_steps = cfgint(cfg, "sampling.steps", cfgint(cfg, "diffusion.steps", 1000))
         ctx = NBodyDiffusionContext(model, device, sample_steps)
         params = init_diffusion_params(rng, model; device)
+        _log_parameter_count("nbody_diffusion", params)
 
         params, _, losses = train_diffusion_adam(
             ctx, params, train_data;
@@ -645,6 +670,8 @@ function run_experiment(cfg::Dict{String,Any}; config_path=nothing)
     family = cfgsymbol(cfg, "experiment.family", "nbody_cnf")
     if family == :nbody_cnf
         return run_nbody_cnf_experiment(cfg; config_path)
+    elseif family == :nbody_flow_matching
+        return run_nbody_flow_matching_experiment(cfg; config_path)
     elseif family in (:nbody_diffusion, :nbody_equivariant_diffusion)
         return run_nbody_diffusion_experiment(cfg; config_path)
     end

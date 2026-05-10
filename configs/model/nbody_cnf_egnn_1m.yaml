@@ -1,5 +1,6 @@
 experiment:
   family: nbody_cnf
+  name: nbody_cnf_egnn_1m_rouse_hdf5
   seed: 0
 
 runtime:
@@ -9,26 +10,27 @@ data:
   kind: rouse_hdf5
   dim: 2
   n_atoms: 32
-  n_samples: 16000
+  n_samples: 0
   burn_in: 0
+  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/e6a343e8490d/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
+  physics_params: [1.0, 1.0, 3.0]
   center: true
 
 model:
-  name: cnf_egnn
+  name: cnf_egnn_1m
   kind: egnn
   equivariant: true
-  node_embedding_dim: 8
   egnn_layers: 3
-  hidden_dims: [64, 64, 64]
+  hidden_dims: [690, 690, 690]
   trace: fd_hutchinson
 
 ode:
   t0: 0.0
   t1: 1.0
-  abstol: 3.0e-4
-  reltol: 3.0e-4
+  abstol: 1.0e-5
+  reltol: 1.0e-5
 
 training:
   epochs: 60

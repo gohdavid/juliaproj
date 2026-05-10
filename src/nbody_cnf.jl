@@ -18,6 +18,8 @@ struct EGNNVectorField <: AbstractNBodyVectorField
     node_embedding_dim::Int
     hidden_dims::Vector{Int}
     edge_net
+    node_net
+    n_layers::Int
 end
 
 struct NBodyCNFContext
@@ -71,6 +73,11 @@ end
 _backprop_rhs_calls(stats::CNFSolveStats) =
     max(stats.rhs_calls[] - stats.forward_rhs_calls[], 0)
 
+function _gradient_l2_norm(grads)
+    grads === nothing && return Float32(NaN)
+    return Float32(sqrt(Float64(sum(abs2, grads))))
+end
+
 function _dense_chain(input_dim::Int, output_dim::Int, hidden_dims::Vector{Int}; final_activation=identity)
     dims = [input_dim; hidden_dims; output_dim]
     layers = Any[]
@@ -83,7 +90,8 @@ end
 
 function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10,
                             hidden_dims=[64, 64, 64],
-                            node_embedding_dim::Int=min(16, n_atoms))
+                            node_embedding_dim::Int=min(16, n_atoms),
+                            n_layers::Int=0)
     hidden = Int.(hidden_dims)
     if kind == :mlp
         input_dim = dim * n_atoms + 1
@@ -91,9 +99,20 @@ function build_vector_field(kind::Symbol; dim::Int=2, n_atoms::Int=10,
         return MLPVectorField(dim, n_atoms, hidden,
                               _dense_chain(input_dim, output_dim, hidden))
     elseif kind == :egnn
-        input_dim = 2 * n_atoms + 3
-        return EGNNVectorField(dim, n_atoms, n_atoms, hidden,
-                               _dense_chain(input_dim, dim, hidden))
+        if n_layers <= 0
+            input_dim = 2 * n_atoms + 3
+            return EGNNVectorField(dim, n_atoms, n_atoms, hidden,
+                                   _dense_chain(input_dim, dim, hidden),
+                                   nothing,
+                                   0)
+        end
+        edge_input_dim = 2 * node_embedding_dim + 3
+        edge_output_dim = node_embedding_dim + 1
+        node_input_dim = 2 * node_embedding_dim + 1
+        return EGNNVectorField(dim, n_atoms, node_embedding_dim, hidden,
+                               _dense_chain(edge_input_dim, edge_output_dim, hidden),
+                               _dense_chain(node_input_dim, node_embedding_dim, hidden),
+                               n_layers)
     else
         error("Unknown vector field kind: $kind")
     end
@@ -106,7 +125,13 @@ end
 
 function init_cnf_params(rng::AbstractRNG, field::EGNNVectorField; device=identity)
     edge_params, _ = DiffEqFlux.Lux.setup(rng, field.edge_net)
-    return ComponentArray(edge_net=edge_params) |> device
+    if field.n_layers <= 0
+        return ComponentArray(edge_net=edge_params) |> device
+    end
+    node_params, _ = DiffEqFlux.Lux.setup(rng, field.node_net)
+    node_embed = 0.1f0 .* randn(rng, Float32, field.node_embedding_dim, field.n_atoms)
+    return ComponentArray(edge_net=edge_params, node_net=node_params,
+                          node_embed=node_embed) |> device
 end
 
 function forward_mlp_generic_jvp(input, params, jvp_probe)
@@ -131,6 +156,19 @@ function forward_mlp_generic_jvp(input, params, jvp_probe)
         end
     end
     return val, deriv
+end
+
+function forward_mlp_generic(input, params)
+    val = input
+    layer_keys = collect(keys(params))
+    last_key = last(layer_keys)
+
+    for key in layer_keys
+        layer_params = params[key]
+        pre_act = layer_params.weight * val .+ layer_params.bias
+        val = key == last_key ? pre_act : tanh.(pre_act)
+    end
+    return val
 end
 
 function log_standard_normal(x)
@@ -188,6 +226,19 @@ function _egnn_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
     mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
                    1, n_atoms, n_atoms, 1) |> device
 
+    return seq_dist_flat, mask
+end
+
+function _egnn_legacy_fixed_inputs(field::EGNNVectorField, batch_size::Int, device)
+    n_atoms = field.n_atoms
+
+    seq_dist_fixed = Float32[i - j for i in 1:n_atoms, j in 1:n_atoms]
+    seq_dist_fixed = reshape(seq_dist_fixed, 1, n_atoms * n_atoms)
+    seq_dist_flat = repeat(seq_dist_fixed, outer=(1, batch_size)) |> device
+
+    mask = reshape(1.0f0 .- Matrix{Float32}(I, n_atoms, n_atoms),
+                   1, n_atoms, n_atoms, 1) |> device
+
     h_fixed = Matrix{Float32}(I, n_atoms, n_atoms)
     h_i_flat = repeat(h_fixed, outer=(1, n_atoms * batch_size)) |> device
     h_j_flat = repeat(h_fixed, inner=(1, n_atoms), outer=(1, batch_size)) |> device
@@ -207,8 +258,108 @@ function center_positions(x)
     return x .- center_of_mass(x)
 end
 
-function _egnn_exact_dynamics(u, params, t; field::EGNNVectorField,
-                              h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+function _egnn_velocity(field::EGNNVectorField, params, x, t;
+                        seq_dist_flat, mask)
+    dim, n_atoms, batch_size = size(x)
+    h0 = params.node_embed
+    batch_zeros = x[1:1, 1:1, :] .* zero(eltype(x))
+    h = reshape(h0, field.node_embedding_dim, n_atoms, 1) .+ batch_zeros
+    dx_total = x .* zero(eltype(x))
+
+    for _ in 1:field.n_layers
+        x_i = reshape(x, dim, n_atoms, 1, batch_size)
+        x_j = reshape(x, dim, 1, n_atoms, batch_size)
+        r_ij = x_i .- x_j
+        d_ij = sum(abs2, r_ij; dims=1)
+        d_ij_flat = reshape(d_ij, 1, n_atoms * n_atoms * batch_size)
+        t_flat = d_ij_flat .* zero(eltype(x)) .+ eltype(x)(t)
+        edge_zeros = d_ij .* zero(eltype(x))
+
+        h_i = reshape(h, field.node_embedding_dim, n_atoms, 1, batch_size)
+        h_j = reshape(h, field.node_embedding_dim, 1, n_atoms, batch_size)
+        h_i_flat = reshape(h_i .+ edge_zeros,
+                           field.node_embedding_dim, n_atoms * n_atoms * batch_size)
+        h_j_flat = reshape(h_j .+ edge_zeros,
+                           field.node_embedding_dim, n_atoms * n_atoms * batch_size)
+
+        edge_input = vcat(h_i_flat, h_j_flat, seq_dist_flat, d_ij_flat, t_flat)
+        edge_out = forward_mlp_generic(edge_input, params.edge_net)
+        coord_weight = reshape(edge_out[1:1, :], 1, n_atoms, n_atoms, batch_size)
+        messages = reshape(edge_out[2:end, :], field.node_embedding_dim, n_atoms, n_atoms, batch_size)
+
+        layer_dx = sum((coord_weight .* mask) .* r_ij; dims=3) ./ Float32(n_atoms)
+        layer_dx = reshape(layer_dx, dim, n_atoms, batch_size)
+        dx_total = dx_total .+ layer_dx
+
+        node_agg = reshape(sum(messages .* mask; dims=3) ./ Float32(n_atoms),
+                           field.node_embedding_dim, n_atoms, batch_size)
+        h_flat = reshape(h, field.node_embedding_dim, n_atoms * batch_size)
+        node_agg_flat = reshape(node_agg, field.node_embedding_dim, n_atoms * batch_size)
+        node_t = h_flat[1:1, :] .* zero(eltype(x)) .+ eltype(x)(t)
+        node_input = vcat(h_flat, node_agg_flat, node_t)
+        node_delta = forward_mlp_generic(node_input, params.node_net)
+        h = h .+ reshape(node_delta, field.node_embedding_dim, n_atoms, batch_size)
+    end
+
+    return dx_total ./ Float32(field.n_layers)
+end
+
+function _zygote_divergence(f, x_flat)
+    trace = zero(eltype(x_flat))
+    for i in eachindex(x_flat)
+        grad_i = Zygote.gradient(z -> f(z)[i], x_flat)[1]
+        grad_i === nothing && error("Zygote returned no coordinate gradient while computing divergence.")
+        trace = trace + grad_i[i]
+    end
+    return trace
+end
+
+function _egnn_exact_trace_dynamics(u, params, t; field::EGNNVectorField,
+                                    seq_dist_flat, mask)
+    x = u.x
+    dim, n_atoms, batch_size = size(x)
+    dx = _egnn_velocity(field, params, x, t; seq_dist_flat, mask)
+    traces = [
+        _zygote_divergence(reshape(x[:, :, b], dim * n_atoms)) do x_flat
+            x_single = reshape(x_flat, dim, n_atoms, 1)
+            seq_single = @view(seq_dist_flat[:, ((b - 1) * n_atoms * n_atoms + 1):(b * n_atoms * n_atoms)])
+            reshape(_egnn_velocity(field, params, x_single, t;
+                                   seq_dist_flat=seq_single, mask), dim * n_atoms)
+        end
+    for b in 1:batch_size
+    ]
+    dlogp = -reshape(collect(traces), 1, batch_size)
+    return ComponentArray(x=dx, logp=dlogp)
+end
+
+function _egnn_hutchinson_trace_dynamics(u, params, t; field::EGNNVectorField,
+                                         seq_dist_flat, mask, probe)
+    x = u.x
+    dx = _egnn_velocity(field, params, x, t; seq_dist_flat, mask)
+    jtv = Zygote.gradient(z -> sum(_egnn_velocity(field, params, z, t;
+                                                  seq_dist_flat, mask) .* probe), x)[1]
+    jtv === nothing && error("Zygote returned no coordinate gradient while computing Hutchinson trace.")
+    trace_est = sum(probe .* jtv; dims=(1, 2))
+    dlogp = -reshape(trace_est, 1, size(x, 3))
+    return ComponentArray(x=dx, logp=dlogp)
+end
+
+function _egnn_fd_hutchinson_trace_dynamics(u, params, t; field::EGNNVectorField,
+                                            seq_dist_flat, mask, probe,
+                                            epsilon::Float32=1.0f-3)
+    x = u.x
+    dx = _egnn_velocity(field, params, x, t; seq_dist_flat, mask)
+    eps = eltype(x)(epsilon)
+    f_plus = _egnn_velocity(field, params, x .+ eps .* probe, t; seq_dist_flat, mask)
+    f_minus = _egnn_velocity(field, params, x .- eps .* probe, t; seq_dist_flat, mask)
+    jv = (f_plus .- f_minus) ./ (2eps)
+    trace_est = sum(probe .* jv; dims=(1, 2))
+    dlogp = -reshape(trace_est, 1, size(x, 3))
+    return ComponentArray(x=dx, logp=dlogp)
+end
+
+function _egnn_legacy_exact_dynamics(u, params, t; field::EGNNVectorField,
+                                     h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
     x = u.x
     dim, n_atoms, batch_size = size(x)
     x_i = reshape(x, dim, n_atoms, 1, batch_size)
@@ -257,13 +408,39 @@ function _cnf_problem(ctx::NBodyCNFContext, params, batch_size::Int, tspan; rng,
             end
         end
     elseif field isa EGNNVectorField
-        h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
-            _egnn_fixed_inputs(field, batch_size, ctx.device)
-        end
-        ode_func = (u, p, t) -> begin
-            _count_rhs!(stats)
-            _egnn_exact_dynamics(
-                u, p, t; field, h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+        if field.n_layers <= 0
+            h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe = Zygote.ignore() do
+                _egnn_legacy_fixed_inputs(field, batch_size, ctx.device)
+            end
+            ode_func = (u, p, t) -> begin
+                _count_rhs!(stats)
+                _egnn_legacy_exact_dynamics(
+                    u, p, t; field, h_i_flat, h_j_flat, seq_dist_flat, mask, jvp_probe)
+            end
+        else
+            seq_dist_flat, mask = Zygote.ignore() do
+                _egnn_fixed_inputs(field, batch_size, ctx.device)
+            end
+            if ctx.trace_mode == :exact
+                ode_func = (u, p, t) -> begin
+                    _count_rhs!(stats)
+                    _egnn_exact_trace_dynamics(u, p, t; field, seq_dist_flat, mask)
+                end
+            elseif ctx.trace_mode == :hutchinson_ad
+                probe = _rademacher(rng, field.dim, field.n_atoms, batch_size) |> ctx.device
+                ode_func = (u, p, t) -> begin
+                    _count_rhs!(stats)
+                    _egnn_hutchinson_trace_dynamics(
+                        u, p, t; field, seq_dist_flat, mask, probe)
+                end
+            else
+                probe = _rademacher(rng, field.dim, field.n_atoms, batch_size) |> ctx.device
+                ode_func = (u, p, t) -> begin
+                    _count_rhs!(stats)
+                    _egnn_fd_hutchinson_trace_dynamics(
+                        u, p, t; field, seq_dist_flat, mask, probe)
+                end
+            end
         end
     else
         error("Unsupported vector field $(typeof(field))")
@@ -357,6 +534,7 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
                 p -> cnf_nll(ctx, p, x_batch; rng, stats=solve_stats), params)
             grad_params = grads[1]
             grad_params === nothing && error("Zygote returned no parameter gradient.")
+            gradient_norm = _gradient_l2_norm(grad_params)
 
             opt_state, params = Optimisers.update(opt_state, params, grad_params)
             step += 1
@@ -377,11 +555,12 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
                     step,
                     total_steps,
                     loss=loss_f32,
+                    gradient_norm,
                 )
             end
 
             if log_every > 0 && (step == total_steps || step % log_every == 0)
-                @info "training_step" epoch batch=batch_num step total_steps loss=loss_f32 ode_forward_steps=solve_stats.forward_naccept[] ode_forward_rejects=solve_stats.forward_nreject[] ode_forward_rhs_calls=solve_stats.forward_nf[] backprop_rhs_calls=batch_backprop_rhs
+                @info "training_step" epoch batch=batch_num step total_steps loss=loss_f32 gradient_norm ode_forward_steps=solve_stats.forward_naccept[] ode_forward_rejects=solve_stats.forward_nreject[] ode_forward_rhs_calls=solve_stats.forward_nf[] backprop_rhs_calls=batch_backprop_rhs
             end
         end
         mean_loss = Float32(epoch_loss / n_samples)
