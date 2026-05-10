@@ -7,14 +7,19 @@ data:
 analysis:
   video: false
   potential: true
+  negative_log_likelihood: true
   score: true
 
 score:
   bins: 120
   analytic_points: 1200
 
+nll:
+  bins: 120
+
 output:
   dir: outputs
   experiment_name: rouse_ring_bond
   histogram_file: rouse_ring_bond_potential_histogram.png
+  nll_file: rouse_ring_bond_negative_log_likelihood_histogram.png
   score_file: rouse_ring_bond_score_norm2_histogram.png

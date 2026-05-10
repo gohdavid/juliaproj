@@ -1,0 +1,19 @@
+experiment:
+  config: configs/experiments/d025_run2/rouse_confinement_video.yaml
+
+data:
+  prefer_hdf5: true
+
+analysis:
+  video: true
+  potential: false
+  score: false
+
+video:
+  framerate: 60
+
+output:
+  dir: outputs
+  experiment_name: rouse_confinement_video_d025_run2
+  frame_dirname: frames
+  gif_file: rouse_confinement_video_d025_run2_first_5tau.gif

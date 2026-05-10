@@ -1,0 +1,12 @@
+extends: ../rouse_ring_bond.yaml
+seed: 1026
+
+parallel:
+  workers: 16
+  log_dir: logs/d025_run2/rouse_ring_bond
+
+rouse:
+  diffusion: 0.25
+
+output:
+  experiment_name: rouse_ring_bond_d025_run2

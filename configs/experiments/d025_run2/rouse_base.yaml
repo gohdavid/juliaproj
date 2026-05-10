@@ -1,0 +1,12 @@
+extends: ../rouse_base.yaml
+seed: 1000
+
+parallel:
+  workers: 16
+  log_dir: logs/d025_run2/rouse_base
+
+rouse:
+  diffusion: 0.25
+
+output:
+  experiment_name: rouse_base_d025_run2

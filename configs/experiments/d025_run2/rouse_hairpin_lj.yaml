@@ -1,0 +1,12 @@
+extends: ../rouse_hairpin_lj.yaml
+seed: 1025
+
+parallel:
+  workers: 16
+  log_dir: logs/d025_run2/rouse_hairpin_lj
+
+rouse:
+  diffusion: 0.25
+
+output:
+  experiment_name: rouse_hairpin_lj_d025_run2

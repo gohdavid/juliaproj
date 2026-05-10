@@ -1,0 +1,12 @@
+extends: ../rouse_excluded_volume.yaml
+seed: 1022
+
+parallel:
+  workers: 16
+  log_dir: logs/d025_run2/rouse_excluded_volume
+
+rouse:
+  diffusion: 0.25
+
+output:
+  experiment_name: rouse_excluded_volume_d025_run2

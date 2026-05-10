@@ -50,9 +50,9 @@ and the observed sample standard error
     SE_observed = std(U_samples) / sqrt(M).
 
 A plot config chooses whether to make a video/GIF, a potential-density
-histogram, a score-norm histogram, or a combination from a single experiment
-output file. Video plots preserve center-of-mass drift by setting global axes
-from the raw video coordinates.
+histogram, a negative-log-likelihood histogram, a score-norm histogram, or a
+combination from a single experiment output file. Video plots preserve
+center-of-mass drift by setting global axes from the raw video coordinates.
 
 Usage:
 
@@ -376,6 +376,23 @@ function plot_score_norm2_histogram(score_norm2, xs, analytic_density,
     return out_path
 end
 
+function plot_negative_log_likelihood_histogram(nll_values, out_path; bins::Int=60)
+    fig = Figure(size=(950, 650), backgroundcolor=:white)
+    ax = Axis(fig[1, 1],
+              xlabel="-log p(X) up to additive constant",
+              ylabel="probability density")
+    style_axis!(ax)
+    hist!(ax, nll_values; bins=bins, normalization=:pdf,
+          color=(OKABE_ITO_BLUE, 0.55), strokewidth=1,
+          strokecolor=:white)
+    vlines!(ax, [mean(nll_values)], color=OKABE_ITO_VERMILLION,
+            linestyle=:dash, linewidth=4,
+            label=@sprintf("sample mean = %.2f", mean(nll_values)))
+    axislegend(ax, position=:rt)
+    save(out_path, fig)
+    return out_path
+end
+
 function experiment_output_paths_and_dir(plot_cfg)
     explicit = cfgget(plot_cfg, "data.path", nothing)
     if explicit !== nothing
@@ -670,6 +687,28 @@ function make_score_output(payload, out_dir, plot_cfg)
     @printf "sample std ||score||^2: %.4f\n" std(score_norm2)
 end
 
+function make_negative_log_likelihood_output(payload, out_dir, plot_cfg)
+    traj = payload["traj"]
+    times = payload["times"]
+    sim_cfg = payload["config"]
+    diffusion = sim_cfg["diffusion"]
+    k_over_xi = sim_cfg["k_over_xi"]
+    tau_r = sim_cfg["tau_r"]
+
+    nll_values = [analytic_potential(traj[:, :, i], diffusion, k_over_xi, sim_cfg)
+                  for i in axes(traj, 3)]
+    bins = cfgint(plot_cfg, "nll.bins", 60)
+    nll_path = output_child_path(plot_cfg, out_dir, "output.nll_path",
+                                 "output.nll_file",
+                                 "rouse_raw_negative_log_likelihood_histogram.png")
+    plot_negative_log_likelihood_histogram(nll_values, nll_path; bins=bins)
+
+    println("Saved NLL histogram:   $nll_path")
+    @printf "NLL samples: %d through %.2f tau_R\n" length(nll_values) (times[end] / tau_r)
+    @printf "sample mean NLL: %.4f\n" mean(nll_values)
+    @printf "sample std NLL: %.4f\n" std(nll_values)
+end
+
 function main()
     length(ARGS) == 1 || error("Usage: julia --project=. scripts/rouse_score_analytics.jl <config.yaml>")
     plot_cfg_path = project_path(ARGS[1])
@@ -689,13 +728,15 @@ function main()
     do_video = cfgbool(plot_cfg, "analysis.video", false)
     do_potential = cfgbool(plot_cfg, "analysis.potential", false)
     do_score = cfgbool(plot_cfg, "analysis.score", false)
-    do_video || do_potential || do_score ||
-        error("Plot config must set analysis.video, analysis.potential, or analysis.score to true")
+    do_nll = cfgbool(plot_cfg, "analysis.negative_log_likelihood", false)
+    do_video || do_potential || do_score || do_nll ||
+        error("Plot config must set analysis.video, analysis.potential, analysis.score, or analysis.negative_log_likelihood to true")
 
     println("Loaded raw trajectory files: $(length(data_paths))")
     @printf "combined analysis frames: %d\n" size(payload["traj"], 3)
     do_video && make_video_outputs(payload, out_dir, plot_cfg)
     do_potential && make_potential_output(payload, out_dir, plot_cfg)
+    do_nll && make_negative_log_likelihood_output(payload, out_dir, plot_cfg)
     do_score && make_score_output(payload, out_dir, plot_cfg)
 end
 

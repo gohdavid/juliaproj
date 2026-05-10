@@ -57,11 +57,9 @@ nonideal:
     enabled: false
 
 solver:
-  algorithm: SOSRA
+  algorithm: SOSRA2
   dt: 0.0005
-  adaptive: true
-  reltol: 1.0e-8
-  abstol: 1.0e-8
+  adaptive: false
 
 save:
   burn_in_tau: 20.0

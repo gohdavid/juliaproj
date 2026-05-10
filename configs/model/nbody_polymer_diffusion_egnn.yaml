@@ -12,7 +12,7 @@ data:
   n_atoms: 32
   n_samples: 16000
   burn_in: 0
-  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/f2e45fc694d2/trajectories
+  source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/e6a343e8490d/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
   physics_params: [1.0, 1.0, 3.0]
