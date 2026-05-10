@@ -17,9 +17,8 @@ Important fields:
 - `experiment.name`: output-name component under `runs/`.
 - `model.name`: human-readable model label using the naming convention above.
 - `model.equivariant`: explicit boolean for paper/table bookkeeping.
-- `diffusion.objective`: `score_matching` trains a time-dependent score network
-  with denoising score matching; `denoising` trains the DDPM noise-prediction
-  objective.
+- `diffusion_egnn` trains a VP-SDE time-dependent score network directly
+  against `-eps / sigma(t)` with `sigma_square(t)` loss weighting.
 - `data.source_dir` / `data.source_pattern`: HDF5 source selection for polymer
   configs.
 - `training.log_every`: step interval for training progress logs; `0` disables
