@@ -380,6 +380,7 @@ function euler_maruyama_sample(model, shape; num_steps::Int=1000,
                        length=num_steps)
     dt = 1.0f0 / Float32(num_steps)
     sqrt_dt = sqrt(dt)
+    warned_nonfinite = false
 
     for (step, t_raw) in enumerate(time_steps)
         x_t = center_positions(x_t)
@@ -394,6 +395,13 @@ function euler_maruyama_sample(model, shape; num_steps::Int=1000,
         noise = @. g_t * sqrt_dt * z
         x_t = @. x_t - dx + noise
         x_t = center_positions(x_t)
+        if !warned_nonfinite && !all(isfinite, x_t)
+            x_cpu = DiffEqFlux.Lux.cpu_device()(x_t)
+            finite_samples = count(i -> all(isfinite, @view(x_cpu[:, :, i])),
+                                   axes(x_cpu, 3))
+            @warn "non-finite diffusion sample state" step t finite_samples batch_size
+            warned_nonfinite = true
+        end
     end
 
     return x_t

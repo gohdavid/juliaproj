@@ -6,6 +6,8 @@ outputs/
 
 # Claude Code config
 .claude/
+.codex
 
 runs
 papers
+analysis

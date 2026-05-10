@@ -239,8 +239,16 @@ end
 
 function _sample_metrics(train_data, samples)
     samples_cpu = DiffEqFlux.Lux.cpu_device()(samples)
+    finite_value_count = count(isfinite, samples_cpu)
+    finite_sample_count = count(i -> all(isfinite, @view(samples_cpu[:, :, i])),
+                                axes(samples_cpu, 3))
+    n_values = length(samples_cpu)
+    n_samples = size(samples_cpu, 3)
     return Dict{String,Float32}(
         "pairwise_distance_mae" => pairwise_distance_mae(train_data, samples_cpu),
+        "sample_finite_value_fraction" => Float32(finite_value_count / n_values),
+        "sample_finite_sample_fraction" => Float32(finite_sample_count / n_samples),
+        "sample_finite_samples" => Float32(finite_sample_count),
     )
 end
 
