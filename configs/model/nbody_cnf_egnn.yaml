@@ -26,8 +26,8 @@ model:
   kind: egnn
   equivariant: true
   egnn_layers: 3
-  hidden_dims: [256, 256, 256]
-  trace: hutchinson_jvp
+  hidden_dims: [128, 128, 128, 128]
+  trace: hutchinson_fd
 
 ode:
   t0: 0.0

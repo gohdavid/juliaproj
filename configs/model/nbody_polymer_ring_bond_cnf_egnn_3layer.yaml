@@ -11,5 +11,4 @@ data:
 
 model:
   egnn_layers: 3
-  hidden_dims: [256, 256, 256]
-  trace: hutchinson_jvp
+  trace: hutchinson_fd

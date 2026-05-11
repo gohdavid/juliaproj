@@ -1,0 +1,9 @@
+extends: nbody_polymer_nonideal_additive_cnf_egnn.yaml
+
+experiment:
+  name: nbody_polymer_nonideal_additive_cnf_egnn_3layer_wide_rouse_hdf5
+
+model:
+  node_embedding_dim: 32
+  egnn_layers: 3
+  hidden_dims: [256, 256, 256, 256, 256, 256]

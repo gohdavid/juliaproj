@@ -30,6 +30,8 @@ function usage()
       --n-samples N         Number of samples per checkpoint. Default: config sampling.n_samples.
       --batch-size N        Sampling batch size. Default: n-samples, one solve per checkpoint.
       --seed N              Base sampling seed. Default: checkpoint config experiment.seed.
+      --baseline-seed N     Base Gaussian baseline seed. Default: seed + 10000.
+      --skip-gaussian       Do not compute the Gaussian noise baseline.
       --force               Resample checkpoints even if sample payloads already exist.
       --help                Show this message.
     """)
@@ -46,11 +48,16 @@ function parse_args(args)
         elseif arg == "--force"
             opts["force"] = true
             i += 1
-        elseif arg in ("--checkpoint-dir", "--output-dir", "--n-samples", "--batch-size", "--seed")
+        elseif arg == "--skip-gaussian"
+            opts["skip_gaussian"] = true
+            i += 1
+        elseif arg in ("--checkpoint-dir", "--output-dir", "--n-samples", "--batch-size",
+                       "--seed", "--baseline-seed")
             i < length(args) || error("Missing value for $arg")
             key = replace(arg[3:end], "-" => "_")
             value = args[i + 1]
-            opts[key] = key in ("n_samples", "batch_size", "seed") ? parse(Int, value) : value
+            opts[key] = key in ("n_samples", "batch_size", "seed", "baseline_seed") ?
+                        parse(Int, value) : value
             i += 2
         else
             error("Unknown argument: $arg")
@@ -102,9 +109,23 @@ end
 
 function write_summary_csv(path::AbstractString, records)
     open(path, "w") do io
-        println(io, "epoch,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path")
+        println(io, "model,epoch,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path")
+        if !isempty(records)
+            gaussian = get(first(records), "gaussian_baseline", nothing)
+            if gaussian !== nothing
+                println(io, join((
+                    gaussian["model"],
+                    "NA",
+                    "NA",
+                    gaussian["pairwise_distance_energy"],
+                    gaussian["pairwise_distance_mmd"],
+                    gaussian["samples_path"],
+                ), ","))
+            end
+        end
         for rec in records
             println(io, join((
+                "checkpoint",
                 rec["checkpoint_epoch"],
                 rec["checkpoint_loss"],
                 rec["pairwise_distance_energy"],
@@ -114,6 +135,65 @@ function write_summary_csv(path::AbstractString, records)
         end
     end
     return path
+end
+
+function write_long_summary_csv(path::AbstractString, records)
+    open(path, "w") do io
+        println(io, "epoch,model,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path")
+        if !isempty(records)
+            gaussian = get(first(records), "gaussian_baseline", nothing)
+            if gaussian !== nothing
+                println(io, join((
+                    "NA",
+                    gaussian["model"],
+                    "NA",
+                    gaussian["pairwise_distance_energy"],
+                    gaussian["pairwise_distance_mmd"],
+                    gaussian["samples_path"],
+                ), ","))
+            end
+        end
+        for rec in records
+            println(io, join((
+                rec["checkpoint_epoch"],
+                "checkpoint",
+                rec["checkpoint_loss"],
+                rec["pairwise_distance_energy"],
+                rec["pairwise_distance_mmd"],
+                rec["samples_path"],
+            ), ","))
+        end
+    end
+    return path
+end
+
+function gaussian_noise_baseline(train_data, normalizer, output_dir::AbstractString;
+                                 seed::Int)
+    rng = Xoshiro(seed)
+    noise = BoltzFlow.center_positions(randn(rng, Float32, size(train_data)))
+    samples = BoltzFlow.center_positions(BoltzFlow.invert_data_normalizer(noise, normalizer))
+    samples_path = joinpath(output_dir, "gaussian_noise_samples.jls")
+    serialize(samples_path, Dict{String,Any}(
+        "samples" => samples,
+        "model" => "centered Gaussian noise",
+        "sampling" => Dict{String,Any}(
+            "seed" => seed,
+        ),
+        "data_normalizer" => normalizer,
+        "created_at" => Dates.now(),
+    ))
+
+    metrics = merge(Dict{String,Any}(
+        "model" => "centered Gaussian noise",
+        "samples_path" => samples_path,
+        "n_generated_samples" => size(samples, 3),
+        "n_data_samples" => size(train_data, 3),
+        "feature" => "label-aligned pairwise node distances",
+        "seed" => seed,
+    ), BoltzFlow.pairwise_distance_distribution_metrics(train_data, samples))
+    serialize(joinpath(output_dir, "gaussian_baseline_metrics.jls"), metrics)
+    write_metrics_text(joinpath(output_dir, "gaussian_baseline_metrics.txt"), metrics)
+    return metrics
 end
 
 function run_checkpoint_structural_eval(opts)
@@ -144,6 +224,11 @@ function run_checkpoint_structural_eval(opts)
     ctx, _ = BoltzFlow._cnf_context_from_config(cfg, device)
     normalizer = BoltzFlow.cfgget(cfg, "data.normalizer", BoltzFlow.identity_data_normalizer())
     force = Bool(get(opts, "force", false))
+    skip_gaussian = Bool(get(opts, "skip_gaussian", false))
+    baseline_seed = Int(get(opts, "baseline_seed", base_seed + 10000))
+    gaussian_baseline = skip_gaussian ? nothing :
+                        gaussian_noise_baseline(train_data, normalizer, output_dir;
+                                                seed=baseline_seed)
 
     records = Vector{Dict{String,Any}}()
     for checkpoint_path in checkpoints
@@ -188,6 +273,11 @@ function run_checkpoint_structural_eval(opts)
             "n_data_samples" => size(train_data, 3),
             "feature" => "label-aligned pairwise node distances",
         ), BoltzFlow.pairwise_distance_distribution_metrics(train_data, samples))
+
+        if gaussian_baseline !== nothing
+            metrics["gaussian_baseline"] = gaussian_baseline
+        end
+
         serialize(joinpath(checkpoint_output_dir, "structural_metrics.jls"), metrics)
         write_metrics_text(joinpath(checkpoint_output_dir, "structural_metrics.txt"), metrics)
         push!(records, metrics)
@@ -197,7 +287,9 @@ function run_checkpoint_structural_eval(opts)
 
     serialize(joinpath(output_dir, "structural_metrics_all.jls"), records)
     write_summary_csv(joinpath(output_dir, "structural_metrics_all.csv"), records)
+    write_long_summary_csv(joinpath(output_dir, "structural_metrics_long.csv"), records)
     println("wrote summary: ", joinpath(output_dir, "structural_metrics_all.csv"))
+    println("wrote long summary: ", joinpath(output_dir, "structural_metrics_long.csv"))
     return records
 end
 

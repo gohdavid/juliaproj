@@ -741,7 +741,7 @@ function train_cnf_adam(ctx::NBodyCNFContext, params, train_data;
             end
 
             if log_every > 0 && (step == total_steps || step % log_every == 0)
-                @info "training_step" epoch batch=batch_num step total_steps loss=loss_f32 gradient_norm ode_forward_steps=solve_stats.forward_naccept[] ode_forward_rejects=solve_stats.forward_nreject[] ode_forward_rhs_calls=solve_stats.forward_nf[] backprop_rhs_calls=batch_backprop_rhs
+                @info "training_step" epoch step total_steps loss=loss_f32 gradient_norm ode_forward_steps=solve_stats.forward_naccept[] ode_forward_rejects=solve_stats.forward_nreject[] ode_forward_rhs_calls=solve_stats.forward_nf[] backprop_rhs_calls=batch_backprop_rhs
             end
         end
         mean_loss = Float32(epoch_loss / n_samples)

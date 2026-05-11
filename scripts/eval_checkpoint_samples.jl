@@ -134,19 +134,24 @@ function polymer_reference(samples, cfg)
     k_over_xi = length(p) >= 3 ? p[3] : 3.0f0 * diffusion / bond_length^2
     nonideal = BoltzFlow.polymer_nonideal_params(p)
 
+    potential = Vector{Float32}(undef, size(samples, 3))
     force = similar(samples)
     score = similar(samples)
     for i in axes(samples, 3)
         x = @view(samples[:, :, i])
+        potential[i] = Float32(
+            BoltzFlow.polymer_langevin_potential(x, diffusion, k_over_xi, nonideal)
+        )
         BoltzFlow.polymer_langevin_force!(@view(force[:, :, i]), x,
                                           diffusion, k_over_xi, nonideal)
         score[:, :, i] .= @view(force[:, :, i]) ./ Float32(diffusion)
     end
-    return (; force, score, diffusion=Float32(diffusion), k_over_xi=Float32(k_over_xi))
+    return (; potential, force, score,
+            diffusion=Float32(diffusion), k_over_xi=Float32(k_over_xi))
 end
 
-function cnf_scores(checkpoint, checkpoint_path::AbstractString, samples;
-                    batch_size::Int=16, rng::AbstractRNG=Xoshiro(0))
+function cnf_potential_and_scores(checkpoint, checkpoint_path::AbstractString, samples;
+                                  batch_size::Int=16, rng::AbstractRNG=Xoshiro(0))
     cfg = checkpoint["config"]
     device = BoltzFlow._device_from_config(cfg)
     ctx, _ = BoltzFlow._cnf_context_from_config(cfg, device)
@@ -154,18 +159,23 @@ function cnf_scores(checkpoint, checkpoint_path::AbstractString, samples;
     normalizer = BoltzFlow.cfgget(cfg, "data.normalizer", BoltzFlow.identity_data_normalizer())
     cpu = BoltzFlow.DiffEqFlux.Lux.cpu_device()
 
+    potential = Vector{Float32}(undef, size(samples, 3))
     scores = similar(samples)
     n_samples = size(samples, 3)
     for batch_start in 1:batch_size:n_samples
         batch_stop = min(batch_start + batch_size - 1, n_samples)
         batch_idx = batch_start:batch_stop
-        @info "evaluating CNF score" checkpoint_path range="$(batch_start):$(batch_stop)" total=n_samples
+        @info "evaluating CNF potential/score" checkpoint_path range="$(batch_start):$(batch_stop)" total=n_samples
+        batch = samples[:, :, batch_idx]
+        logp = cpu(BoltzFlow.normalized_cnf_logp(
+            ctx, params, batch, normalizer; rng))
         scores[:, :, batch_idx] .= cpu(
             BoltzFlow.normalized_cnf_logp_gradient(
-                ctx, params, samples[:, :, batch_idx], normalizer; rng)
+                ctx, params, batch, normalizer; rng)
         )
+        potential[batch_idx] .= Float32.(-vec(logp))
     end
-    return scores
+    return potential, scores
 end
 
 function cosine_stats(pred, target)
@@ -181,6 +191,26 @@ function cosine_stats(pred, target)
         end
     end
     return n_valid == 0 ? NaN : cosine_sum / n_valid
+end
+
+function centered_mse(pred, target)
+    pred_centered = pred .- mean(pred)
+    target_centered = target .- mean(target)
+    return mean(abs2, pred_centered .- target_centered)
+end
+
+function centered_mae(pred, target)
+    pred_centered = pred .- mean(pred)
+    target_centered = target .- mean(target)
+    return mean(abs, pred_centered .- target_centered)
+end
+
+function pearson_corr(pred, target)
+    pred_centered = pred .- mean(pred)
+    target_centered = target .- mean(target)
+    denom = sqrt(sum(abs2, pred_centered) * sum(abs2, target_centered))
+    denom > 0 || return NaN
+    return sum(pred_centered .* target_centered) / denom
 end
 
 function evaluate_samples(opts)
@@ -205,14 +235,17 @@ function evaluate_samples(opts)
     mkpath(output_dir)
 
     reference = polymer_reference(samples, cfg)
-    model_score = cnf_scores(checkpoint, checkpoint_path, samples;
-                             batch_size=Int(opts["batch_size"]))
+    model_potential, model_score = cnf_potential_and_scores(
+        checkpoint, checkpoint_path, samples; batch_size=Int(opts["batch_size"]))
     model_force = model_score .* reference.diffusion
 
     score_mse = mean(abs2, model_score .- reference.score)
     force_mse = mean(abs2, model_force .- reference.force)
     score_cosine = cosine_stats(model_score, reference.score)
     force_cosine = cosine_stats(model_force, reference.force)
+    potential_centered_mse = centered_mse(model_potential, reference.potential)
+    potential_centered_mae = centered_mae(model_potential, reference.potential)
+    potential_correlation = pearson_corr(model_potential, reference.potential)
 
     metrics = Dict{String,Any}(
         "samples_path" => samples_path,
@@ -221,10 +254,18 @@ function evaluate_samples(opts)
         "n_samples" => max_samples,
         "diffusion" => reference.diffusion,
         "k_over_xi" => reference.k_over_xi,
+        "score_definition" => "model_score = grad_x log p_model(x); reference_score = analytic_force / diffusion",
+        "force_definition" => "model_force = diffusion * model_score; reference_force = analytic Langevin drift force",
+        "potential_definition" => "model_potential = -log p_model(x); reference_potential = analytic dimensionless potential with diffusion scaling; centered metrics remove additive constant",
         "score_mse" => Float32(score_mse),
         "force_mse" => Float32(force_mse),
         "score_cosine" => Float32(score_cosine),
         "force_cosine" => Float32(force_cosine),
+        "potential_centered_mse" => Float32(potential_centered_mse),
+        "potential_centered_mae" => Float32(potential_centered_mae),
+        "potential_correlation" => Float32(potential_correlation),
+        "model_potential_mean" => Float32(mean(model_potential)),
+        "reference_potential_mean" => Float32(mean(reference.potential)),
     )
 
     serialize(joinpath(output_dir, "sample_eval_metrics.jls"), metrics)
@@ -247,6 +288,9 @@ function evaluate_samples(opts)
     @printf("force MSE: %.6g\n", force_mse)
     @printf("score cosine: %.6f\n", score_cosine)
     @printf("force cosine: %.6f\n", force_cosine)
+    @printf("potential centered MSE: %.6g\n", potential_centered_mse)
+    @printf("potential centered MAE: %.6g\n", potential_centered_mae)
+    @printf("potential correlation: %.6f\n", potential_correlation)
     println("wrote metrics: ", joinpath(output_dir, "sample_eval_metrics.txt"))
     println("wrote frames:  ", frame_dir)
     return metrics

@@ -15,4 +15,6 @@ data:
 model:
   name: cnf_egnn_check_3layer
   egnn_layers: 3
-  hidden_dims: [256, 256, 256]
+
+training:
+  batch_size: 64
