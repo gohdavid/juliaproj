@@ -324,17 +324,20 @@ function fit_data_normalizer(x; enabled::Bool=false,
     )
 end
 
+_normalizer_stat_for_x(stat, x::CUDA.CuArray) = CUDA.cu(stat)
+_normalizer_stat_for_x(stat, x) = stat
+
 function apply_data_normalizer(x, normalizer)
     _normalizer_enabled(normalizer) || return x
-    mean_x = get(normalizer, "mean", Float32[0.0])
-    scale = get(normalizer, "scale", Float32[1.0])
+    mean_x = _normalizer_stat_for_x(get(normalizer, "mean", Float32[0.0]), x)
+    scale = _normalizer_stat_for_x(get(normalizer, "scale", Float32[1.0]), x)
     return (x .- mean_x) ./ scale
 end
 
 function invert_data_normalizer(x, normalizer)
     _normalizer_enabled(normalizer) || return x
-    mean_x = get(normalizer, "mean", Float32[0.0])
-    scale = get(normalizer, "scale", Float32[1.0])
+    mean_x = _normalizer_stat_for_x(get(normalizer, "mean", Float32[0.0]), x)
+    scale = _normalizer_stat_for_x(get(normalizer, "scale", Float32[1.0]), x)
     return x .* scale .+ mean_x
 end
 
@@ -358,7 +361,7 @@ function normalized_cnf_logp_gradient(ctx::NBodyCNFContext, params, x_batch,
     x_norm = center_positions(apply_data_normalizer(x_batch, normalizer))
     grad_norm = cnf_logp_gradient(ctx, params, x_norm; rng)
     _normalizer_enabled(normalizer) || return grad_norm
-    return grad_norm ./ normalizer["scale"]
+    return grad_norm ./ _normalizer_stat_for_x(normalizer["scale"], grad_norm)
 end
 
 function _egnn_velocity(field::EGNNVectorField, params, x, t, seq_dist_flat, mask)

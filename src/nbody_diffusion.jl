@@ -145,7 +145,8 @@ function sigma_square(t)
 end
 
 function sigma(t)
-    return @. sqrt(max(sigma_square(t), 0.0f0))
+    sigma2 = sigma_square(t)
+    return @. sqrt(max(sigma2, 0.0f0))
 end
 
 function _stable_diffusion_time(t)
