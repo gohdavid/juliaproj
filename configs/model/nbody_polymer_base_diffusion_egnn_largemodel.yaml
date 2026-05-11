@@ -1,0 +1,14 @@
+extends: nbody_polymer_base_diffusion_egnn.yaml
+
+experiment:
+  name: nbody_polymer_base_diffusion_egnn_rouse_largemodel
+
+model:
+  node_embedding_dim: 32
+  egnn_layers: 3
+  hidden_dims: [256, 256, 256, 256, 256, 256]
+
+training:
+  epochs: 80
+  batch_size: 128
+  learning_rate: 5.0e-5
