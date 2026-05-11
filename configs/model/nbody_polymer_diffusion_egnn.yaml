@@ -15,7 +15,7 @@ data:
   source_dir: /home/rsmukk/data/18337/juliaproj/outputs/rouse_base/400cf3f38543/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
-  physics_params: [1.0, 1.0, 3.0]
+  physics_params: [0.25, 1.0, 3.0]
   center: true
   normalize: true
   normalization_mode: scalar

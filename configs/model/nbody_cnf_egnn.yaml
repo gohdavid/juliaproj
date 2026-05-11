@@ -15,7 +15,7 @@ data:
   source_dir: /orcd/scratch/orcd/006/davidgoh/juliaproj/outputs/rouse_base/f5ecf974b2a8/trajectories
   source_pattern: traj_seed*.h5
   allow_partial: false
-  physics_params: [1.0, 1.0, 3.0]
+  physics_params: [0.25, 1.0, 3.0]
   center: true
   normalize: false
   normalization_mode: scalar
