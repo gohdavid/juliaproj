@@ -10,7 +10,13 @@ struct ExperimentResult
     samples
     output_dir::String
     metrics::Dict{String,Float32}
+    gradlogp_forces::Union{Nothing,Dict{String,Any}}
 end
+
+ExperimentResult(config, train_data, params, losses::Vector{Float32}, samples,
+                 output_dir::String, metrics::Dict{String,Float32}) =
+    ExperimentResult(config, train_data, params, losses, samples, output_dir,
+                     metrics, nothing)
 
 _cpu_device() = DiffEqFlux.Lux.cpu_device()
 
@@ -367,11 +373,13 @@ function _polymer_langevin_diffusion(data_cfg::NBodyDataConfig)
     return Float32(length(p) >= 1 ? p[1] : 1.0f0)
 end
 
-function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
+function _cnf_gradlogp_force_evaluation(ctx::NBodyCNFContext, params, train_data,
                                         force_targets; batch_size::Int=64,
                                         normalizer=identity_data_normalizer(),
                                         diffusion::Real=1.0f0,
                                         rng::AbstractRNG=Random.default_rng())
+    force_targets_cpu = DiffEqFlux.Lux.cpu_device()(force_targets)
+    pred_forces = similar(force_targets_cpu)
     n_samples = size(train_data, 3)
     sqerr = 0.0
     n_values = 0
@@ -382,18 +390,33 @@ function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data
             normalized_cnf_logp_gradient(
                 ctx, params, train_data[:, :, batch_idx], normalizer; rng))
         pred_force = pred .* Float32(diffusion)
-        target = @view(force_targets[:, :, batch_idx])
+        pred_forces[:, :, batch_idx] .= pred_force
+        target = @view(force_targets_cpu[:, :, batch_idx])
         sqerr += sum(abs2, pred_force .- target)
         n_values += length(target)
     end
-    return Float32(sqerr / n_values)
+    mse = Float32(sqerr / n_values)
+    return Dict{String,Any}(
+        "force_targets" => force_targets_cpu,
+        "gradlogp_force_predictions" => pred_forces,
+        "mse" => mse,
+        "diffusion" => Float32(diffusion),
+    )
 end
 
-function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params,
-                                             train_data, force_targets;
-                                             batch_size::Int=64,
-                                             normalizer=identity_data_normalizer(),
-                                             diffusion::Real=1.0f0)
+function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
+                                        force_targets; kwargs...)
+    return _cnf_gradlogp_force_evaluation(
+        ctx, params, train_data, force_targets; kwargs...)["mse"]
+end
+
+function _diffusion_gradlogp_force_evaluation(ctx::NBodyDiffusionContext, params,
+                                              train_data, force_targets;
+                                              batch_size::Int=64,
+                                              normalizer=identity_data_normalizer(),
+                                              diffusion::Real=1.0f0)
+    force_targets_cpu = DiffEqFlux.Lux.cpu_device()(force_targets)
+    pred_forces = similar(force_targets_cpu)
     n_samples = size(train_data, 3)
     sqerr = 0.0
     n_values = 0
@@ -408,11 +431,24 @@ function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params
             pred = pred ./ normalizer["scale"]
         end
         pred_force = pred .* Float32(diffusion)
-        target = @view(force_targets[:, :, batch_idx])
+        pred_forces[:, :, batch_idx] .= pred_force
+        target = @view(force_targets_cpu[:, :, batch_idx])
         sqerr += sum(abs2, pred_force .- target)
         n_values += length(target)
     end
-    return Float32(sqerr / n_values)
+    mse = Float32(sqerr / n_values)
+    return Dict{String,Any}(
+        "force_targets" => force_targets_cpu,
+        "gradlogp_force_predictions" => pred_forces,
+        "mse" => mse,
+        "diffusion" => Float32(diffusion),
+    )
+end
+
+function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params,
+                                             train_data, force_targets; kwargs...)
+    return _diffusion_gradlogp_force_evaluation(
+        ctx, params, train_data, force_targets; kwargs...)["mse"]
 end
 
 function _gradlogp_force_cosine_stats(pred, target)
@@ -490,6 +526,7 @@ function _save_result(result::ExperimentResult)
         "losses" => result.losses,
         "samples" => DiffEqFlux.Lux.cpu_device()(result.samples),
         "metrics" => result.metrics,
+        "gradlogp_forces" => result.gradlogp_forces,
     ))
     return path
 end
@@ -514,6 +551,7 @@ function _save_result(result::DiffusionResult)
         "losses" => result.losses,
         "samples" => DiffEqFlux.Lux.cpu_device()(result.samples),
         "metrics" => result.metrics,
+        "gradlogp_forces" => result.gradlogp_forces,
     ))
     return path
 end
@@ -641,18 +679,20 @@ function run_nbody_cnf_experiment(cfg::Dict{String,Any}; config_path=nothing)
         metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
             "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
         ))
+        gradlogp_forces = nothing
         if data_cfg.kind in (:polymer_langevin, :rouse_hdf5)
             force_targets = _polymer_langevin_force_targets(train_data, data_cfg)
-            metrics["gradlogp_force_mse"] = _cnf_gradlogp_force_mse_metric(
+            gradlogp_forces = _cnf_gradlogp_force_evaluation(
                 ctx, params, train_data, force_targets;
                 batch_size=cfgint(cfg, "training.batch_size", 64),
                 normalizer,
                 rng,
             )
+            metrics["gradlogp_force_mse"] = gradlogp_forces["mse"]
         end
 
         result = ExperimentResult(cfg, train_data, params, losses, samples,
-                                  output_dir, metrics)
+                                  output_dir, metrics, gradlogp_forces)
         result_path = _save_result(result)
         plot_path = _maybe_plot_result(result)
         @info "experiment complete" output_dir=result.output_dir result_path plot_path metrics
@@ -771,17 +811,19 @@ function run_nbody_diffusion_experiment(cfg::Dict{String,Any}; config_path=nothi
         metrics = merge(_sample_metrics(train_data, samples), Dict{String,Float32}(
             "final_training_loss" => isempty(losses) ? Float32(NaN) : last(losses),
         ))
+        gradlogp_forces = nothing
         if data_cfg.kind in (:polymer_langevin, :rouse_hdf5)
             force_targets = _polymer_langevin_force_targets(train_data, data_cfg)
-            metrics["gradlogp_force_mse"] = _diffusion_gradlogp_force_mse_metric(
+            gradlogp_forces = _diffusion_gradlogp_force_evaluation(
                 ctx, params, train_data, force_targets;
                 batch_size=cfgint(cfg, "training.batch_size", 64),
                 normalizer,
             )
+            metrics["gradlogp_force_mse"] = gradlogp_forces["mse"]
         end
 
         result = DiffusionResult(cfg, train_data, params, losses, samples,
-                                 output_dir, metrics)
+                                 output_dir, metrics, gradlogp_forces)
         result_path = _save_result(result)
         plot_path = _maybe_plot_result(result)
         @info "diffusion experiment complete" output_dir=result.output_dir result_path plot_path metrics

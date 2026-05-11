@@ -42,7 +42,13 @@ struct DiffusionResult
     samples
     output_dir::String
     metrics::Dict{String,Float32}
+    gradlogp_forces::Union{Nothing,Dict{String,Any}}
 end
+
+DiffusionResult(config, train_data, params, losses::Vector{Float32}, samples,
+                output_dir::String, metrics::Dict{String,Float32}) =
+    DiffusionResult(config, train_data, params, losses, samples, output_dir,
+                    metrics, nothing)
 
 function _diffusion_silu(x)
     return x / (one(x) + exp(-x))
