@@ -27,7 +27,8 @@ function usage()
       julia --project=. scripts/sample_eval_forces_energies_checkpoints.jl --checkpoint-dir DIR [options]
 
     Options:
-      --checkpoint-dir DIR          Directory containing checkpoint_epoch_*.jls files. Required.
+      --checkpoint-dir DIR          Directory containing checkpoint_epoch_*.jls files.
+      --checkpoint PATH             Evaluate one specific checkpoint_epoch_*.jls file.
       --output-dir DIR              Output directory. Default: <run>/forces_energies_checkpoint_eval.
       --n-samples N                 Number of samples per checkpoint. Default: config sampling.n_samples.
       --sample-batch-size N         Sampling batch size. Default: n-samples.
@@ -36,6 +37,7 @@ function usage()
       --distribution-max-samples N  Limit datapoints for MMD/energy metrics. Default: all.
       --scatter-points N            Score entries in each scatterplot. Default: 10000.
       --min-epoch N                 First checkpoint epoch to evaluate. Default: all.
+      --last-checkpoint             Evaluate only the last checkpoint in --checkpoint-dir.
       --max-checkpoints N           Evaluate only the first N checkpoints. Default: all.
       --seed N                      Base sampling/eval seed. Default: checkpoint config experiment.seed.
       --force                       Resample checkpoints even if sample payloads already exist.
@@ -45,6 +47,31 @@ end
 
 function parse_args(args)
     opts = Dict{String,Any}()
+    value_args = Set([
+        "--checkpoint-dir",
+        "--checkpoint",
+        "--output-dir",
+        "--n-samples",
+        "--sample-batch-size",
+        "--eval-batch-size",
+        "--max-data-samples",
+        "--distribution-max-samples",
+        "--scatter-points",
+        "--min-epoch",
+        "--max-checkpoints",
+        "--seed",
+    ])
+    int_keys = Set([
+        "n_samples",
+        "sample_batch_size",
+        "eval_batch_size",
+        "max_data_samples",
+        "distribution_max_samples",
+        "scatter_points",
+        "min_epoch",
+        "max_checkpoints",
+        "seed",
+    ])
     i = 1
     while i <= length(args)
         arg = args[i]
@@ -54,22 +81,29 @@ function parse_args(args)
         elseif arg == "--force"
             opts["force"] = true
             i += 1
-        elseif arg in ("--checkpoint-dir", "--output-dir", "--n-samples",
-                       "--sample-batch-size", "--eval-batch-size",
-                       "--max-data-samples", "--distribution-max-samples",
-                       "--scatter-points", "--min-epoch", "--max-checkpoints", "--seed")
+        elseif arg == "--last-checkpoint"
+            opts["last_checkpoint"] = true
+            i += 1
+        elseif occursin("=", arg) && startswith(arg, "--")
+            raw_key, value = split(arg, "="; limit=2)
+            raw_key in value_args || error("Unknown argument: $raw_key")
+            key = replace(raw_key[3:end], "-" => "_")
+            opts[key] = key in int_keys ? parse(Int, value) : value
+            i += 1
+        elseif arg in value_args
             i < length(args) || error("Missing value for $arg")
             key = replace(arg[3:end], "-" => "_")
             value = args[i + 1]
-            opts[key] = key in ("n_samples", "sample_batch_size", "eval_batch_size",
-                                "max_data_samples", "distribution_max_samples",
-                                "scatter_points", "min_epoch", "max_checkpoints", "seed") ? parse(Int, value) : value
+            opts[key] = key in int_keys ? parse(Int, value) : value
             i += 2
         else
             error("Unknown argument: $arg")
         end
     end
-    haskey(opts, "checkpoint_dir") || error("Set --checkpoint-dir DIR")
+    haskey(opts, "checkpoint_dir") || haskey(opts, "checkpoint") ||
+        error("Set --checkpoint-dir DIR or --checkpoint PATH")
+    haskey(opts, "checkpoint_dir") && haskey(opts, "checkpoint") &&
+        error("Set only one of --checkpoint-dir or --checkpoint")
     return opts
 end
 
@@ -741,22 +775,35 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
 end
 
 function run_checkpoint_force_energy_eval(opts)
-    checkpoint_dir = project_path(String(opts["checkpoint_dir"]))
-    checkpoints = checkpoint_paths(checkpoint_dir)
-    min_epoch = get(opts, "min_epoch", nothing)
-    if min_epoch !== nothing
-        min_epoch = Int(min_epoch)
-        checkpoints = [
-            path for path in checkpoints
-            if parse(Int, match(r"checkpoint_epoch_(\d+)\.jls$", basename(path)).captures[1]) >= min_epoch
-        ]
+    checkpoints = if haskey(opts, "checkpoint")
+        checkpoint_path = project_path(String(opts["checkpoint"]))
+        isfile(checkpoint_path) || error("checkpoint file does not exist: $checkpoint_path")
+        [checkpoint_path]
+    else
+        checkpoint_dir = project_path(String(opts["checkpoint_dir"]))
+        paths = checkpoint_paths(checkpoint_dir)
+        min_epoch = get(opts, "min_epoch", nothing)
+        if min_epoch !== nothing
+            min_epoch = Int(min_epoch)
+            paths = [
+                path for path in paths
+                if parse(Int, match(r"checkpoint_epoch_(\d+)\.jls$", basename(path)).captures[1]) >= min_epoch
+            ]
+            isempty(paths) && error("No checkpoints remain after applying --min-epoch $min_epoch")
+        end
+        if Bool(get(opts, "last_checkpoint", false))
+            paths = [last(paths)]
+        else
+            max_checkpoints = get(opts, "max_checkpoints", nothing)
+            if max_checkpoints !== nothing
+                n_keep = min(Int(max_checkpoints), length(paths))
+                n_keep > 0 || error("--max-checkpoints must be positive")
+                paths = paths[1:n_keep]
+            end
+        end
+        paths
     end
-    max_checkpoints = get(opts, "max_checkpoints", nothing)
-    if max_checkpoints !== nothing
-        n_keep = min(Int(max_checkpoints), length(checkpoints))
-        n_keep > 0 || error("--max-checkpoints must be positive")
-        checkpoints = checkpoints[1:n_keep]
-    end
+    checkpoint_dir = dirname(first(checkpoints))
     run_dir = dirname(checkpoint_dir)
     output_dir = project_path(String(get(opts, "output_dir",
                                          joinpath(run_dir, "forces_energies_checkpoint_eval"))))
