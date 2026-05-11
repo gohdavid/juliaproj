@@ -2,6 +2,8 @@ export EquivariantFMVectorField, NBodyFlowMatchingContext, FlowMatchingResult
 export build_fm_vector_field, init_fm_params, flow_matching_loss
 export train_flow_matching_adam, generate_flow_matching_samples
 export center_positions, center_of_mass, pairwise_distance_mae
+export labeled_pairwise_distance_features, pairwise_distance_energy
+export pairwise_distance_mmd, pairwise_distance_distribution_metrics
 
 struct EquivariantFMVectorField
     dim::Int
@@ -193,4 +195,123 @@ function pairwise_distance_mae(reference, generated)
     ref_mean = mean(ref_dist; dims=3)
     gen_mean = mean(gen_dist; dims=3)
     return Float32(mean(abs.(ref_mean .- gen_mean)))
+end
+
+function labeled_pairwise_distance_features(positions)
+    dim, n_atoms, n_samples = size(positions)
+    n_pairs = n_atoms * (n_atoms - 1) ÷ 2
+    features = Matrix{Float32}(undef, n_pairs, n_samples)
+
+    pair_idx = 1
+    for i in 1:(n_atoms - 1), j in (i + 1):n_atoms
+        for sample_idx in 1:n_samples
+            sqdist = zero(Float32)
+            for d in 1:dim
+                delta = Float32(positions[d, i, sample_idx] - positions[d, j, sample_idx])
+                sqdist += delta * delta
+            end
+            features[pair_idx, sample_idx] = sqrt(sqdist)
+        end
+        pair_idx += 1
+    end
+    return features
+end
+
+function _mean_pairwise_norm(x, y)
+    n_x = size(x, 2)
+    n_y = size(y, 2)
+    n_features = size(x, 1)
+    total = 0.0
+    for j in 1:n_y, i in 1:n_x
+        sqdist = 0.0
+        for k in 1:n_features
+            delta = Float64(x[k, i]) - Float64(y[k, j])
+            sqdist += delta * delta
+        end
+        total += sqrt(sqdist)
+    end
+    return total / (n_x * n_y)
+end
+
+function _mean_rbf_kernel(x, y, sigma::Real)
+    sigma2 = Float64(sigma) ^ 2
+    sigma2 > 0 || return NaN
+
+    n_x = size(x, 2)
+    n_y = size(y, 2)
+    n_features = size(x, 1)
+    total = 0.0
+    for j in 1:n_y, i in 1:n_x
+        sqdist = 0.0
+        for k in 1:n_features
+            delta = Float64(x[k, i]) - Float64(y[k, j])
+            sqdist += delta * delta
+        end
+        total += exp(-0.5 * sqdist / sigma2)
+    end
+    return total / (n_x * n_y)
+end
+
+function _median_pairwise_norm(features; max_points::Int=512)
+    n_samples = size(features, 2)
+    n_eval = min(n_samples, max_points)
+    n_eval >= 2 || return 1.0f0
+
+    n_features = size(features, 1)
+    indices = round.(Int, range(1, n_samples; length=n_eval))
+    distances = Float64[]
+    sizehint!(distances, n_eval * (n_eval - 1) ÷ 2)
+    for b in 2:n_eval, a in 1:(b - 1)
+        i = indices[a]
+        j = indices[b]
+        sqdist = 0.0
+        for k in 1:n_features
+            delta = Float64(features[k, i]) - Float64(features[k, j])
+            sqdist += delta * delta
+        end
+        push!(distances, sqrt(sqdist))
+    end
+    med = median!(distances)
+    return Float32(max(med, eps(Float32)))
+end
+
+function pairwise_distance_energy(reference, generated)
+    ref_features = labeled_pairwise_distance_features(reference)
+    gen_features = labeled_pairwise_distance_features(generated)
+    value = 2.0 * _mean_pairwise_norm(ref_features, gen_features) -
+            _mean_pairwise_norm(ref_features, ref_features) -
+            _mean_pairwise_norm(gen_features, gen_features)
+    return Float32(max(value, 0.0))
+end
+
+function pairwise_distance_mmd(reference, generated; sigmas=nothing)
+    ref_features = labeled_pairwise_distance_features(reference)
+    gen_features = labeled_pairwise_distance_features(generated)
+    if sigmas === nothing
+        pooled = hcat(ref_features, gen_features)
+        base_sigma = _median_pairwise_norm(pooled)
+        sigmas = Float32[0.5f0 * base_sigma, base_sigma, 2.0f0 * base_sigma, 4.0f0 * base_sigma]
+    else
+        sigmas = Float32.(sigmas)
+    end
+
+    mmd = 0.0
+    n_sigmas = 0
+    for sigma in sigmas
+        isfinite(sigma) && sigma > 0 || continue
+        value = _mean_rbf_kernel(ref_features, ref_features, sigma) +
+                _mean_rbf_kernel(gen_features, gen_features, sigma) -
+                2.0 * _mean_rbf_kernel(ref_features, gen_features, sigma)
+        mmd += value
+        n_sigmas += 1
+    end
+    n_sigmas > 0 || return Float32(NaN)
+    return Float32(max(mmd / n_sigmas, 0.0))
+end
+
+function pairwise_distance_distribution_metrics(reference, generated)
+    return Dict{String,Float32}(
+        "pairwise_distance_energy" => pairwise_distance_energy(reference, generated),
+        "pairwise_distance_mmd" => pairwise_distance_mmd(reference, generated),
+    )
 end

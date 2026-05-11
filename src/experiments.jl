@@ -88,10 +88,7 @@ function _ode_solver_from_config(cfg)
 end
 
 function _trace_mode_from_config(cfg)
-    trace = cfgsymbol(cfg, "model.trace", "hutchinson")
-    trace == :hutchinson_ad && return :hutchinson_jvp
-    trace == :fd_hutchinson && return :hutchinson_fd
-    return trace
+    return cfgsymbol(cfg, "model.trace", "hutchinson")
 end
 
 function _make_context(cfg, field, device)
@@ -340,12 +337,12 @@ function _sample_metrics(train_data, samples)
                                 axes(samples_cpu, 3))
     n_values = length(samples_cpu)
     n_samples = size(samples_cpu, 3)
-    return Dict{String,Float32}(
+    return merge(Dict{String,Float32}(
         "pairwise_distance_mae" => pairwise_distance_mae(train_data, samples_cpu),
         "sample_finite_value_fraction" => Float32(finite_value_count / n_values),
         "sample_finite_sample_fraction" => Float32(finite_sample_count / n_samples),
         "sample_finite_samples" => Float32(finite_sample_count),
-    )
+    ), pairwise_distance_distribution_metrics(train_data, samples_cpu))
 end
 
 function _polymer_langevin_force_targets(train_data, data_cfg::NBodyDataConfig)
@@ -365,9 +362,15 @@ function _polymer_langevin_force_targets(train_data, data_cfg::NBodyDataConfig)
     return targets
 end
 
+function _polymer_langevin_diffusion(data_cfg::NBodyDataConfig)
+    p = data_cfg.physics_params
+    return Float32(length(p) >= 1 ? p[1] : 1.0f0)
+end
+
 function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data,
                                         force_targets; batch_size::Int=64,
                                         normalizer=identity_data_normalizer(),
+                                        diffusion::Real=1.0f0,
                                         rng::AbstractRNG=Random.default_rng())
     n_samples = size(train_data, 3)
     sqerr = 0.0
@@ -378,8 +381,9 @@ function _cnf_gradlogp_force_mse_metric(ctx::NBodyCNFContext, params, train_data
         pred = DiffEqFlux.Lux.cpu_device()(
             normalized_cnf_logp_gradient(
                 ctx, params, train_data[:, :, batch_idx], normalizer; rng))
+        pred_force = pred .* Float32(diffusion)
         target = @view(force_targets[:, :, batch_idx])
-        sqerr += sum(abs2, pred .- target)
+        sqerr += sum(abs2, pred_force .- target)
         n_values += length(target)
     end
     return Float32(sqerr / n_values)
@@ -388,7 +392,8 @@ end
 function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params,
                                              train_data, force_targets;
                                              batch_size::Int=64,
-                                             normalizer=identity_data_normalizer())
+                                             normalizer=identity_data_normalizer(),
+                                             diffusion::Real=1.0f0)
     n_samples = size(train_data, 3)
     sqerr = 0.0
     n_values = 0
@@ -402,8 +407,9 @@ function _diffusion_gradlogp_force_mse_metric(ctx::NBodyDiffusionContext, params
         if Bool(get(normalizer, "enabled", false))
             pred = pred ./ normalizer["scale"]
         end
+        pred_force = pred .* Float32(diffusion)
         target = @view(force_targets[:, :, batch_idx])
-        sqerr += sum(abs2, pred .- target)
+        sqerr += sum(abs2, pred_force .- target)
         n_values += length(target)
     end
     return Float32(sqerr / n_values)
@@ -429,6 +435,7 @@ end
 function _cnf_gradlogp_force_cosine_metric(ctx::NBodyCNFContext, params, train_data,
                                            force_targets; batch_size::Int=64,
                                            normalizer=identity_data_normalizer(),
+                                           diffusion::Real=1.0f0,
                                            rng::AbstractRNG=Random.default_rng())
     n_samples = size(train_data, 3)
     cosine_sum = 0.0
@@ -439,8 +446,9 @@ function _cnf_gradlogp_force_cosine_metric(ctx::NBodyCNFContext, params, train_d
         pred = DiffEqFlux.Lux.cpu_device()(
             normalized_cnf_logp_gradient(
                 ctx, params, train_data[:, :, batch_idx], normalizer; rng))
+        pred_force = pred .* Float32(diffusion)
         target = @view(force_targets[:, :, batch_idx])
-        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
+        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred_force, target)
         cosine_sum += batch_cosine_sum
         n_valid += batch_valid
     end
@@ -450,7 +458,8 @@ end
 function _diffusion_gradlogp_force_cosine_metric(ctx::NBodyDiffusionContext, params,
                                                  train_data, force_targets;
                                                  batch_size::Int=64,
-                                                 normalizer=identity_data_normalizer())
+                                                 normalizer=identity_data_normalizer(),
+                                                 diffusion::Real=1.0f0)
     n_samples = size(train_data, 3)
     cosine_sum = 0.0
     n_valid = 0
@@ -464,8 +473,9 @@ function _diffusion_gradlogp_force_cosine_metric(ctx::NBodyDiffusionContext, par
         if Bool(get(normalizer, "enabled", false))
             pred = pred ./ normalizer["scale"]
         end
+        pred_force = pred .* Float32(diffusion)
         target = @view(force_targets[:, :, batch_idx])
-        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred, target)
+        batch_cosine_sum, batch_valid = _gradlogp_force_cosine_stats(pred_force, target)
         cosine_sum += batch_cosine_sum
         n_valid += batch_valid
     end

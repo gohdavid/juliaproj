@@ -25,6 +25,8 @@ export generate_normalized_cnf_samples
 export EquivariantFMVectorField, NBodyFlowMatchingContext, FlowMatchingResult
 export build_fm_vector_field, init_fm_params, train_flow_matching_adam
 export generate_flow_matching_samples, center_positions, pairwise_distance_mae
+export labeled_pairwise_distance_features, pairwise_distance_energy
+export pairwise_distance_mmd, pairwise_distance_distribution_metrics
 export EquivariantDiffusionModel, NBodyDiffusionContext, DiffusionResult
 export build_diffusion_model, init_diffusion_params, train_diffusion_adam
 export generate_diffusion_samples, diffusion_logp_gradient
