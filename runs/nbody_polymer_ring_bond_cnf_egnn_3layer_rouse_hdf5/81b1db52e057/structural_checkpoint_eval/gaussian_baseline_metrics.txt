@@ -1,0 +1,8 @@
+feature = label-aligned pairwise node distances
+model = centered Gaussian noise
+n_data_samples = 1000
+n_generated_samples = 1000
+pairwise_distance_energy = 29.128027
+pairwise_distance_mmd = 0.3197294
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_ring_bond_cnf_egnn_3layer_rouse_hdf5/81b1db52e057/structural_checkpoint_eval/gaussian_noise_samples.jls
+seed = 10000

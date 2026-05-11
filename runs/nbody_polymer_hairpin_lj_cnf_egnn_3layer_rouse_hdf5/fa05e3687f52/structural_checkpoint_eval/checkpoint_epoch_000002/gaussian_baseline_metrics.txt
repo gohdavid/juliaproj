@@ -1,0 +1,10 @@
+checkpoint_epoch = 2
+checkpoint_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/checkpoints/checkpoint_epoch_000002.jls
+feature = label-aligned pairwise node distances
+model = centered Gaussian noise
+n_data_samples = 1000
+n_generated_samples = 1000
+pairwise_distance_energy = 48.296867
+pairwise_distance_mmd = 0.5194015
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000002/gaussian_noise_samples.jls
+seed = 10002

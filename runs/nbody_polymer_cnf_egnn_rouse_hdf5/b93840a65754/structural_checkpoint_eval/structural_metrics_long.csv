@@ -1,0 +1,12 @@
+epoch,model,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path
+NA,centered Gaussian noise,NA,11.8930645,0.16542597,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/gaussian_noise_samples.jls
+1,checkpoint,32.35688,4.183712,0.07768354,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000001/samples.jls
+2,checkpoint,13.885353,1.4219913,0.024528993,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000002/samples.jls
+3,checkpoint,11.236779,0.7004817,0.011773748,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000003/samples.jls
+4,checkpoint,10.3826475,0.89916295,0.015449198,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000004/samples.jls
+5,checkpoint,10.002058,0.44297433,0.007413315,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000005/samples.jls
+6,checkpoint,9.861608,0.2863554,0.0045251865,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000006/samples.jls
+7,checkpoint,9.686338,0.19175994,0.0031358558,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000007/samples.jls
+8,checkpoint,9.495289,0.17467538,0.0028435558,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000008/samples.jls
+9,checkpoint,9.689153,0.09983456,0.0017517685,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000009/samples.jls
+10,checkpoint,9.622011,0.4664844,0.007583771,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000010/samples.jls

@@ -1,0 +1,18 @@
+checkpoint_epoch = 10
+checkpoint_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/checkpoints/checkpoint_epoch_000010.jls
+diffusion = 0.25
+force_cosine = 0.9925839
+force_definition = model_force = diffusion * model_score; reference_force = analytic Langevin drift force
+force_mse = 0.0245536
+k_over_xi = 3.0
+model_potential_mean = 7.8242908
+n_samples = 128
+potential_centered_mae = 6.583928
+potential_centered_mse = 70.74106
+potential_correlation = 0.5752285
+potential_definition = model_potential = -log p_model(x); reference_potential = analytic dimensionless potential with diffusion scaling; centered metrics remove additive constant
+reference_potential_mean = 29.631477
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/structural_checkpoint_eval/checkpoint_epoch_000010/samples.jls
+score_cosine = 0.9925839
+score_definition = model_score = grad_x log p_model(x); reference_score = analytic_force / diffusion
+score_mse = 0.3928576

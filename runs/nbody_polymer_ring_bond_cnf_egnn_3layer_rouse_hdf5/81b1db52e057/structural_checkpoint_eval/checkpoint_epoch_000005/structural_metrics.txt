@@ -1,0 +1,10 @@
+checkpoint_epoch = 5
+checkpoint_loss = 22.86304
+checkpoint_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_ring_bond_cnf_egnn_3layer_rouse_hdf5/81b1db52e057/checkpoints/checkpoint_epoch_000005.jls
+feature = label-aligned pairwise node distances
+gaussian_baseline = Dict{String, Any}("n_generated_samples" => 1000, "samples_path" => "/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_ring_bond_cnf_egnn_3layer_rouse_hdf5/81b1db52e057/structural_checkpoint_eval/gaussian_noise_samples.jls", "pairwise_distance_energy" => 29.128027f0, "model" => "centered Gaussian noise", "n_data_samples" => 1000, "feature" => "label-aligned pairwise node distances", "seed" => 10000, "pairwise_distance_mmd" => 0.3197294f0)
+n_data_samples = 1000
+n_generated_samples = 1000
+pairwise_distance_energy = 60.432896
+pairwise_distance_mmd = 0.094724715
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_ring_bond_cnf_egnn_3layer_rouse_hdf5/81b1db52e057/structural_checkpoint_eval/checkpoint_epoch_000005/samples.jls

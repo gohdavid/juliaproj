@@ -1,0 +1,9 @@
+checkpoint_epoch = 9
+checkpoint_loss = -5.977598
+checkpoint_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/checkpoints/checkpoint_epoch_000009.jls
+feature = label-aligned pairwise node distances
+n_data_samples = 1000
+n_generated_samples = 1000
+pairwise_distance_energy = 1.2285359
+pairwise_distance_mmd = 0.17839709
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000009/samples.jls

@@ -1,0 +1,10 @@
+coordinate_mean = 1.9755602
+coordinate_std = 1.2939276
+feature = label-aligned pairwise node distances
+model = Gaussian matched coordinate mean/std
+n_data_samples = 1000
+n_generated_samples = 1000
+pairwise_distance_energy = 10.518621
+pairwise_distance_mmd = 0.37568846
+samples_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/gaussian_matched_mean_std_samples.jls
+seed = 12345

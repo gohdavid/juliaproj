@@ -275,7 +275,7 @@ function evaluate_samples(opts)
         end
     end
 
-    plot_cfg = BoltzFlow.load_yaml_config(project_path(String(opts["plot_config"])))
+    plot_cfg = BoltzFlow.load_yaml_config(project_path(String(get(opts, "plot_config", DEFAULT_PLOT_CONFIG))))
     frame_dir = output_child_path(plot_cfg, output_dir, "output.frame_dirname", "frames")
     draw_ring_bond = length(BoltzFlow.cfgget(cfg, "data.physics_params", Float32[])) >= 37 &&
                      Float32(BoltzFlow.cfgget(cfg, "data.physics_params", Float32[])[37]) > 0.5f0

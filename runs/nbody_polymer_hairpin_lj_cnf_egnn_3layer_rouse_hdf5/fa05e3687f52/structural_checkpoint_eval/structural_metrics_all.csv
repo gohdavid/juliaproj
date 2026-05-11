@@ -1,0 +1,10 @@
+model,epoch,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path
+centered Gaussian noise,NA,NA,48.104458,0.51129735,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/gaussian_noise_samples.jls
+checkpoint,1,46.29432,27.413357,0.38072464,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000001/samples.jls
+checkpoint,2,2.7259216,16.13705,0.27502698,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000002/samples.jls
+checkpoint,3,-3.9857068,11.155756,0.22119944,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000003/samples.jls
+checkpoint,4,-7.52545,7.280349,0.1668795,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000004/samples.jls
+checkpoint,5,-9.503832,3.7425396,0.11116951,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000005/samples.jls
+checkpoint,6,-12.2181225,6.8243303,0.14787145,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000006/samples.jls
+checkpoint,7,-14.6164,3.469458,0.087556645,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000007/samples.jls
+checkpoint,8,-15.723233,4.876749,0.119563416,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_hairpin_lj_cnf_egnn_3layer_rouse_hdf5/fa05e3687f52/structural_checkpoint_eval/checkpoint_epoch_000008/samples.jls

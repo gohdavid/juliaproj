@@ -1,0 +1,16 @@
+model,checkpoint_loss,pairwise_distance_energy,pairwise_distance_mmd,samples_path
+Gaussian matched coordinate mean/std,NA,10.518621,0.37568846,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/gaussian_matched_mean_std_samples.jls
+epoch 1,12.225496,4.396465,0.2731912,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000001/samples.jls
+epoch 2,2.709026,1.916524,0.22313507,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000002/samples.jls
+epoch 3,-1.568607,1.3996522,0.19854094,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000003/samples.jls
+epoch 4,-1.53301,1.4784389,0.20024207,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000004/samples.jls
+epoch 5,-3.727155,0.7821058,0.16253883,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000005/samples.jls
+epoch 6,-4.324098,0.6511085,0.12438006,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000006/samples.jls
+epoch 7,-4.277569,1.2949189,0.20053677,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000007/samples.jls
+epoch 8,-5.534405,1.3128988,0.18885326,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000008/samples.jls
+epoch 9,-5.977598,1.2285359,0.17839709,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000009/samples.jls
+epoch 10,-5.575025,0.38813162,0.071420304,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000010/samples.jls
+epoch 11,-6.8706536,0.18867819,0.04767218,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000011/samples.jls
+epoch 12,-7.069215,0.21634549,0.056762688,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000012/samples.jls
+epoch 13,-6.9280214,0.35357913,0.06760031,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000013/samples.jls
+epoch 14,-6.485034,0.2151356,0.050426025,/orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_cnf_egnn_check_3layer/06cbb1028d50/structural_checkpoint_eval/checkpoint_epoch_000014/samples.jls

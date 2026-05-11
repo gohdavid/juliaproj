@@ -8,7 +8,14 @@ outputs/**/frames/
 .claude/
 .codex
 
-runs
+runs/**
+!runs/**/
+!runs/**/structural_checkpoint_eval/
+!runs/**/structural_checkpoint_eval/**/
+!runs/**/structural_checkpoint_eval/*.csv
+!runs/**/structural_checkpoint_eval/*metrics*.txt
+!runs/**/structural_checkpoint_eval/**/*metrics*.txt
+!runs/**/structural_checkpoint_eval/**/*metrics*.csv
 papers
 analysis
 archive
