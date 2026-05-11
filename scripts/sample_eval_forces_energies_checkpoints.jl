@@ -35,6 +35,7 @@ function usage()
       --max-data-samples N          Limit training datapoints for evaluation. Default: all training data.
       --distribution-max-samples N  Limit datapoints for MMD/energy metrics. Default: all.
       --scatter-points N            Score entries in each scatterplot. Default: 10000.
+      --min-epoch N                 First checkpoint epoch to evaluate. Default: all.
       --max-checkpoints N           Evaluate only the first N checkpoints. Default: all.
       --seed N                      Base sampling/eval seed. Default: checkpoint config experiment.seed.
       --force                       Resample checkpoints even if sample payloads already exist.
@@ -56,13 +57,13 @@ function parse_args(args)
         elseif arg in ("--checkpoint-dir", "--output-dir", "--n-samples",
                        "--sample-batch-size", "--eval-batch-size",
                        "--max-data-samples", "--distribution-max-samples",
-                       "--scatter-points", "--max-checkpoints", "--seed")
+                       "--scatter-points", "--min-epoch", "--max-checkpoints", "--seed")
             i < length(args) || error("Missing value for $arg")
             key = replace(arg[3:end], "-" => "_")
             value = args[i + 1]
             opts[key] = key in ("n_samples", "sample_batch_size", "eval_batch_size",
                                 "max_data_samples", "distribution_max_samples",
-                                "scatter_points", "max_checkpoints", "seed") ? parse(Int, value) : value
+                                "scatter_points", "min_epoch", "max_checkpoints", "seed") ? parse(Int, value) : value
             i += 2
         else
             error("Unknown argument: $arg")
@@ -115,6 +116,9 @@ function write_summary_csv(path::AbstractString, records)
         "physics_score_norm_train_vs_sample_energy",
         "model_score_norm_train_vs_sample_mmd",
         "model_score_norm_train_vs_sample_energy",
+        "model_force_norm_sample_vs_physics_force_norm_train_mmd",
+        "model_force_vector_sample_vs_physics_force_vector_train_energy",
+        "physics_force_vector_train_vs_sample_energy",
         "potential_energy_train_vs_sample_mmd",
         "potential_energy_train_vs_sample_energy",
         "samples_path",
@@ -311,6 +315,21 @@ function _limit_distribution(values, max_samples::Int, rng::AbstractRNG)
     return vals
 end
 
+function flattened_sample_vectors(x)
+    n_samples = size(x, 3)
+    n_features = div(length(x), n_samples)
+    return reshape(Float64.(collect(x)), n_features, n_samples)
+end
+
+function _limit_vector_distribution(values, max_samples::Int, rng::AbstractRNG)
+    n_samples = size(values, 2)
+    if max_samples > 0 && n_samples > max_samples
+        idx = randperm(rng, n_samples)[1:max_samples]
+        return values[:, idx]
+    end
+    return values
+end
+
 function mean_pairwise_abs(x, y)
     (isempty(x) || isempty(y)) && return NaN
     total = 0.0
@@ -318,6 +337,21 @@ function mean_pairwise_abs(x, y)
         total += abs(a - b)
     end
     return total / (length(x) * length(y))
+end
+
+function mean_pairwise_l2(x, y)
+    (size(x, 2) == 0 || size(y, 2) == 0) && return NaN
+    n_features = size(x, 1)
+    total = 0.0
+    for j in axes(y, 2), i in axes(x, 2)
+        sqdist = 0.0
+        for k in 1:n_features
+            delta = x[k, i] - y[k, j]
+            sqdist += delta * delta
+        end
+        total += sqrt(sqdist)
+    end
+    return total / (size(x, 2) * size(y, 2))
 end
 
 function median_pairwise_abs(values; max_points::Int=512)
@@ -350,6 +384,14 @@ function scalar_distribution_energy(x, y)
     value = 2.0 * mean_pairwise_abs(x, y) -
             mean_pairwise_abs(x, x) -
             mean_pairwise_abs(y, y)
+    return Float32(max(value, 0.0))
+end
+
+function vector_distribution_energy(x, y)
+    (size(x, 2) == 0 || size(y, 2) == 0) && return Float32(NaN)
+    value = 2.0 * mean_pairwise_l2(x, y) -
+            mean_pairwise_l2(x, x) -
+            mean_pairwise_l2(y, y)
     return Float32(max(value, 0.0))
 end
 
@@ -511,6 +553,9 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
     if isfile(samples_path) && !force
         @info "loading existing checkpoint samples" epoch samples_path
         samples = Float32.(deserialize(samples_path)["samples"])
+        if size(samples, 3) > n_samples
+            samples = samples[:, :, 1:n_samples]
+        end
     else
         @info "sampling checkpoint" epoch checkpoint_path n_samples sample_batch_size
         params = checkpoint["params"] |> model_ctx.device
@@ -546,6 +591,14 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
     train_model_norm = score_norms(train_model_score)
     sample_physics_norm = score_norms(sample_reference.score)
     sample_model_norm = score_norms(sample_model_score)
+    diffusion = train_reference.diffusion
+    train_physics_force = train_reference.score .* diffusion
+    train_model_force = train_model_score .* diffusion
+    sample_physics_force = sample_reference.score .* diffusion
+    sample_model_force = sample_model_score .* diffusion
+    train_physics_force_norm = score_norms(train_physics_force)
+    sample_physics_force_norm = score_norms(sample_physics_force)
+    sample_model_force_norm = score_norms(sample_model_force)
 
     dist_rng = Xoshiro(base_seed + 300000 + epoch)
     score_norm_series = Dict{String,Vector{Float64}}(
@@ -557,6 +610,14 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
     potential_series = Dict{String,Vector{Float64}}(
         "potential_energy_train" => _limit_distribution(train_reference.potential, distribution_max_samples, dist_rng),
         "potential_energy_sample" => _limit_distribution(sample_reference.potential, distribution_max_samples, dist_rng),
+    )
+    force_vector_series = Dict{String,Matrix{Float64}}(
+        "physics_force_train" => _limit_vector_distribution(
+            flattened_sample_vectors(train_physics_force), distribution_max_samples, dist_rng),
+        "physics_force_sample" => _limit_vector_distribution(
+            flattened_sample_vectors(sample_physics_force), distribution_max_samples, dist_rng),
+        "model_force_sample" => _limit_vector_distribution(
+            flattened_sample_vectors(sample_model_force), distribution_max_samples, dist_rng),
     )
 
     score_norm_density_path = joinpath(checkpoint_output_dir, "score_norm_density.png")
@@ -604,6 +665,7 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
         "train_score_norm_model_mean" => Float32(mean(train_model_norm)),
         "sample_score_norm_physics_mean" => Float32(mean(sample_physics_norm)),
         "sample_score_norm_model_mean" => Float32(mean(sample_model_norm)),
+        "force_definition" => "force = diffusion * score; force-vector energy uses flattened D x N force matrices per sample",
         "train_potential_energy_mean" => Float32(mean(train_reference.potential)),
         "sample_potential_energy_mean" => Float32(mean(sample_reference.potential)),
     )
@@ -621,6 +683,21 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
         score_norm_series["model_score_norm_sample"],
     ))
     merge!(metrics, distribution_pair_metrics(
+        "model_force_norm_sample_vs_physics_force_norm_train",
+        finite_values(sample_model_force_norm),
+        finite_values(train_physics_force_norm),
+    ))
+    metrics["model_force_vector_sample_vs_physics_force_vector_train_energy"] =
+        vector_distribution_energy(
+            force_vector_series["model_force_sample"],
+            force_vector_series["physics_force_train"],
+        )
+    metrics["physics_force_vector_train_vs_sample_energy"] =
+        vector_distribution_energy(
+            force_vector_series["physics_force_train"],
+            force_vector_series["physics_force_sample"],
+        )
+    merge!(metrics, distribution_pair_metrics(
         "potential_energy_train_vs_sample",
         potential_series["potential_energy_train"],
         potential_series["potential_energy_sample"],
@@ -637,6 +714,11 @@ function evaluate_checkpoint(checkpoint, checkpoint_path::AbstractString, model_
         "potential_energy" => Dict{String,Any}(
             "train" => train_reference.potential,
             "sample" => sample_reference.potential,
+        ),
+        "force_norms" => Dict{String,Any}(
+            "physics_train" => train_physics_force_norm,
+            "physics_sample" => sample_physics_force_norm,
+            "model_sample" => sample_model_force_norm,
         ),
         "scatter" => Dict{String,Any}(
             "train_truth" => train_scatter.truth,
@@ -661,6 +743,14 @@ end
 function run_checkpoint_force_energy_eval(opts)
     checkpoint_dir = project_path(String(opts["checkpoint_dir"]))
     checkpoints = checkpoint_paths(checkpoint_dir)
+    min_epoch = get(opts, "min_epoch", nothing)
+    if min_epoch !== nothing
+        min_epoch = Int(min_epoch)
+        checkpoints = [
+            path for path in checkpoints
+            if parse(Int, match(r"checkpoint_epoch_(\d+)\.jls$", basename(path)).captures[1]) >= min_epoch
+        ]
+    end
     max_checkpoints = get(opts, "max_checkpoints", nothing)
     if max_checkpoints !== nothing
         n_keep = min(Int(max_checkpoints), length(checkpoints))
