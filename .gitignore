@@ -1,8 +1,8 @@
 # SLURM job logs
 *.log
 
-# Simulation outputs (large binary/data files)
-outputs/
+# Simulation output frame dumps
+outputs/**/frames/
 
 # Claude Code config
 .claude/
