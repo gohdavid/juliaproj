@@ -1,0 +1,24 @@
+checkpoint_epoch = 9
+checkpoint_family = nbody_cnf
+checkpoint_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/checkpoints/checkpoint_epoch_000009.jls
+diffusion = 0.25
+dt = 0.05
+dynamics = overdamped
+frame_dir = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/brownian_rouse_trajectory/base_best_epoch_000009_dt0p05_20steps/frames
+gif_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/brownian_rouse_trajectory/base_best_epoch_000009_dt0p05_20steps/brownian_rouse_trajectory.gif
+n_pairwise_distance_values = 2000
+n_reference_frames = 512
+n_simulated_frames = 49
+pairwise_distance_mae = 0.3372891
+pairwise_distance_scalar_energy_distance = 0.01858252
+pairwise_distance_scalar_mmd = 0.006023628
+polymer_energy_distance = 1.6417255
+polymer_energy_mmd = 0.08657259
+reference_pairwise_distance_mean = 1.1779633
+reference_polymer_energy_mean = 30.922972
+save_stride = 1
+score_to_force = force = diffusion * grad_x log p_model(x)
+simulated_pairwise_distance_mean = 1.0167453
+simulated_polymer_energy_mean = 34.18333
+steps = 20
+trajectory_path = /orcd/scratch/orcd/006/davidgoh/juliaproj/runs/nbody_polymer_cnf_egnn_rouse_hdf5/b93840a65754/brownian_rouse_trajectory/base_best_epoch_000009_dt0p05_20steps/brownian_rouse_trajectory.jls
