@@ -1,0 +1,68 @@
+logging:
+  progress: true
+  progress_steps: 1000000
+nonideal:
+  confinement:
+    centered: true
+    enabled: false
+    strength: 0.02
+  excluded_volume:
+    cutoff: 1.5
+    enabled: true
+    epsilon: 0.03
+    exclude_bonded: true
+    power: 12.0
+    sigma: 1.0
+    softening: 0.3
+  hairpin_lj:
+    cutoff: 3.0
+    enabled: false
+    epsilon: 5.0
+    min_separation: 2
+    shift: true
+    sigma: 0.9
+    softening: 0.3
+  lennard_jones:
+    cutoff: 2.0
+    enabled: false
+    epsilon: 0.04
+    exclude_bonded: true
+    shift: true
+    sigma: 0.85
+    softening: 0.5
+  ring_bond:
+    enabled: false
+  ring_lj:
+    cutoff: 2.5
+    enabled: false
+    epsilon: 5.0
+    shift: true
+    sigma: 0.9
+    softening: 0.2
+output:
+  dir: outputs
+  experiment_name: rouse_excluded_volume_video
+  file: traj.jls
+  hdf5_file: trajectories/traj.h5
+parallel:
+  julia_num_threads: 1
+  log_dir: logs/rouse_excluded_volume_video
+  seed_stride: 1
+  workers: 1
+rouse:
+  bond_length: 1.0
+  diffusion: 0.25
+  dim: 2
+  k_over_xi: 3.0
+  n_beads: 32
+save:
+  burn_in_tau: 5.0
+  interval_tau: 0.01
+  until_tau: 10.0
+  write_hdf5: true
+  write_jls: false
+seed: 22
+solver:
+  adaptive: false
+  algorithm: SOSRA2
+  dt: 0.0005
