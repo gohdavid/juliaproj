@@ -32,6 +32,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 using CairoMakie
 using Dates
+using DiffEqCallbacks
 using LinearAlgebra
 using Printf
 using Random
@@ -59,6 +60,7 @@ function usage()
       --dt DT                    Integration timestep. Default: polymer config solver.dt, else checkpoint data.dt, else 5e-4.
       --steps N                  Number of Euler-Maruyama steps. Default: 20000.
       --save-stride N            Save every N steps. Default: 100.
+      --log-interval-steps N     Log solve progress every N steps. Default: 1. Use <=0 to disable.
       --score-clip VALUE         Clip per-frame score Frobenius norm. Default: 128. Use <=0 to disable.
       --diffusion-time T         Score time for diffusion checkpoints. Default: 1e-5.
       --dynamics MODE            overdamped or underdamped. Default: overdamped.
@@ -81,6 +83,7 @@ function parse_args(args)
     opts = Dict{String,Any}(
         "steps" => 20_000,
         "save_stride" => 100,
+        "log_interval_steps" => 1,
         "score_clip" => 128.0,
         "diffusion_time" => 1.0e-5,
         "max_data_samples" => 4000,
@@ -108,8 +111,9 @@ function parse_args(args)
             i < length(args) || error("Missing value for $arg")
             opts[replace(arg[3:end], "-" => "_")] = args[i + 1]
             i += 2
-        elseif arg in ("--steps", "--save-stride", "--max-data-samples",
-                       "--metric-samples", "--metric-values", "--framerate")
+        elseif arg in ("--steps", "--save-stride", "--log-interval-steps",
+                       "--max-data-samples", "--metric-samples",
+                       "--metric-values", "--framerate")
             i < length(args) || error("Missing value for $arg")
             opts[replace(arg[3:end], "-" => "_")] = parse(Int, args[i + 1])
             i += 2
@@ -310,6 +314,41 @@ function learned_score_sde_problem(x0, dim::Int, n_atoms::Int, diffusion::Real,
     return SDEProblem(underdamped_f!, underdamped_g!, state0, tspan, nothing)
 end
 
+function format_duration(seconds::Real)
+    total = max(0, round(Int, seconds))
+    hours = total ÷ 3600
+    minutes = (total % 3600) ÷ 60
+    secs = total % 60
+    hours > 0 && return @sprintf("%dh%02dm%02ds", hours, minutes, secs)
+    minutes > 0 && return @sprintf("%dm%02ds", minutes, secs)
+    return @sprintf("%ds", secs)
+end
+
+function solve_progress_callback(steps::Int, dt::Real, log_interval_steps::Int,
+                                 start_wall::Float64)
+    log_interval_steps > 0 || return nothing
+    interval_t = Float64(dt) * Float64(log_interval_steps)
+    interval_t > 0 || return nothing
+    last_step = Ref(-1)
+
+    function log_progress(integrator)
+        step = clamp(round(Int, integrator.t / Float64(dt)), 0, steps)
+        step == last_step[] && return nothing
+        last_step[] = step
+        elapsed = time() - start_wall
+        fraction = steps > 0 ? step / steps : 1.0
+        eta = (step > 0 && fraction > 0) ?
+              format_duration(elapsed * (1.0 / fraction - 1.0)) :
+              "unknown"
+        @info "solve progress" step steps percent=round(100.0 * fraction; digits=1) elapsed=format_duration(elapsed) eta
+        flush(stderr)
+        return nothing
+    end
+
+    return PeriodicCallback(log_progress, interval_t;
+                            initial_affect=true, final_affect=true)
+end
+
 function solution_to_traj(sol, dim::Int, n_atoms::Int)
     traj = zeros(Float32, dim, n_atoms, length(sol.u))
     n_x = dim * n_atoms
@@ -349,6 +388,9 @@ function save_chain_frames(traj, times, frame_dir; draw_ring_bond::Bool=false)
     xlims, ylims = axis_limits(traj)
     n_frames = size(traj, 3)
     n_beads = size(traj, 2)
+    log_every = max(1, n_frames ÷ 10)
+    @info "saving trajectory frames" frame_dir n_frames
+    flush(stderr)
     for frame in 1:n_frames
         fig = Figure(size=(700, 700), backgroundcolor=:white)
         ax = Axis(fig[1, 1], aspect=DataAspect(), xlabel="x", ylabel="y")
@@ -362,6 +404,10 @@ function save_chain_frames(traj, times, frame_dir; draw_ring_bond::Bool=false)
               ylims[2] - 0.06 * (ylims[2] - ylims[1]),
               text=@sprintf("t = %.3g", times[frame]), fontsize=24)
         save(joinpath(frame_dir, @sprintf("frame_%05d.png", frame)), fig)
+        if frame == 1 || frame == n_frames || frame % log_every == 0
+            @info "frame progress" frame n_frames percent=round(100.0 * frame / n_frames; digits=1)
+            flush(stderr)
+        end
     end
     return frame_dir
 end
@@ -379,6 +425,8 @@ function record_gif(traj, times, gif_path; framerate::Int=24,
     xlims!(ax, xlims...)
     ylims!(ax, ylims...)
 
+    @info "rendering trajectory gif" gif_path n_frames=length(frame_ids) framerate
+    flush(stderr)
     record(fig, gif_path, frame_ids; framerate) do frame
         empty!(ax)
         draw_chain!(ax, chain_points(traj[:, :, frame]), n_beads; draw_ring_bond)
@@ -386,6 +434,8 @@ function record_gif(traj, times, gif_path; framerate::Int=24,
               ylims[2] - 0.06 * (ylims[2] - ylims[1]),
               text=@sprintf("t = %.3g", times[frame]), fontsize=24)
     end
+    @info "finished trajectory gif" gif_path
+    flush(stderr)
     return gif_path
 end
 
@@ -560,9 +610,12 @@ function run_brownian_rouse_trajectory(opts)
     dt = Float64(get(opts, "dt", exp_phys === nothing ? ckpt_phys.dt : exp_phys.dt))
     steps = Int(opts["steps"])
     save_stride = Int(opts["save_stride"])
+    log_interval_steps = Int(opts["log_interval_steps"])
     save_stride > 0 || error("--save-stride must be positive")
     steps > 0 || error("--steps must be positive")
 
+    @info "loading model checkpoint" checkpoint_path
+    flush(stderr)
     model_ctx = model_context_from_checkpoint(checkpoint)
     normalizer = BoltzFlow.cfgget(cfg, "data.normalizer",
                                   BoltzFlow.identity_data_normalizer())
@@ -603,8 +656,15 @@ function run_brownian_rouse_trajectory(opts)
     if saveat[end] < Float64(dt * steps)
         push!(saveat, Float64(dt * steps))
     end
-    @info "solving learned-score Brownian Rouse trajectory" checkpoint_path family=model_ctx.family diffusion dt steps save_stride frames=length(saveat)
-    sol = solve(prob, EM(); dt, saveat, adaptive=false)
+    @info "solving learned-score Brownian Rouse trajectory" checkpoint_path family=model_ctx.family diffusion dt steps save_stride log_interval_steps frames=length(saveat)
+    flush(stderr)
+    solve_start = time()
+    progress_cb = solve_progress_callback(steps, dt, log_interval_steps, solve_start)
+    sol = progress_cb === nothing ?
+          solve(prob, EM(); dt, saveat, adaptive=false) :
+          solve(prob, EM(); dt, saveat, adaptive=false, callback=progress_cb)
+    @info "finished solve" elapsed=format_duration(time() - solve_start) saved_frames=length(sol.u)
+    flush(stderr)
     traj = solution_to_traj(sol, dim, n_atoms)
     times = Float64.(sol.t)
 
@@ -612,6 +672,8 @@ function run_brownian_rouse_trajectory(opts)
                                          latest_output_dir(checkpoint_path))))
     mkpath(output_dir)
     traj_path = joinpath(output_dir, "brownian_rouse_trajectory.jls")
+    @info "writing trajectory payload" traj_path
+    flush(stderr)
     serialize(traj_path, Dict{String,Any}(
         "checkpoint_path" => checkpoint_path,
         "checkpoint_epoch" => get(checkpoint, "epoch", nothing),
@@ -622,6 +684,7 @@ function run_brownian_rouse_trajectory(opts)
         "dt" => Float32(dt),
         "steps" => steps,
         "save_stride" => save_stride,
+        "log_interval_steps" => log_interval_steps,
         "score_clip" => Float32(opts["score_clip"]),
         "diffusion_time" => Float32(opts["diffusion_time"]),
         "dynamics" => String(opts["dynamics"]),
@@ -644,6 +707,8 @@ function run_brownian_rouse_trajectory(opts)
 
     metrics_path = nothing
     if reference_data !== nothing
+        @info "computing distribution metrics" output_dir
+        flush(stderr)
         metrics, distributions = distribution_metrics(
             reference_data, traj, data_cfg, rng;
             metric_samples=Int(opts["metric_samples"]),
@@ -677,6 +742,8 @@ function run_brownian_rouse_trajectory(opts)
         plot_overlay(distributions.ref_pairwise, distributions.sim_pairwise,
                      joinpath(output_dir, "pairwise_distance_overlay.png");
                      xlabel="pairwise distance")
+        @info "finished distribution metrics" metrics_path
+        flush(stderr)
     end
 
     println("trajectory: ", traj_path)

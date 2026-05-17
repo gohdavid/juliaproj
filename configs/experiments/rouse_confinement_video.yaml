@@ -5,8 +5,8 @@ parallel:
   log_dir: logs/rouse_confinement_video
 
 save:
-  burn_in_tau: 0.0
-  until_tau: 5.0
+  burn_in_tau: 5.0
+  until_tau: 10.0
   interval_tau: 0.01
 
 output:

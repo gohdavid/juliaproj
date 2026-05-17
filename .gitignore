@@ -4,6 +4,10 @@
 # Simulation output frame dumps
 outputs/**/frames/
 
+# Simulation trajectory payloads
+outputs/**/trajectories/*.h5
+outputs/**/trajectories/*.hdf5
+
 # Claude Code config
 .claude/
 .codex

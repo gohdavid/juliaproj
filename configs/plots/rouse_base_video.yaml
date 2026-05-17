@@ -19,4 +19,4 @@ output:
   dir: outputs
   experiment_name: rouse_base_video
   frame_dirname: frames
-  gif_file: rouse_base_video_first_5tau.gif
+  gif_file: rouse_base_video_burnin5tau_record10tau.gif
